@@ -89,7 +89,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         icon.setAdjustViewBounds(true);
         root.addView(icon, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 220));
 
-        TextView title = tv("ATLAS v7 FULL", 30);
+        TextView title = tv("ATLAS 1.1", 30);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
@@ -160,13 +160,20 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         root.addView(vr);
 
         core = new EditText(this);
-        core.setHint("Atlas Core URL (optional, e.g. https://...)");
+        core.setHint("Custom Atlas Core URL (optional fallback)");
         core.setSingleLine(true);
         core.setText(AtlasStore.coreUrl(this));
         root.addView(core);
         Button save = button("SAVE CORE URL");
         save.setOnClickListener(v -> { AtlasStore.setCoreUrl(this, core.getText().toString()); toast("Core URL saved"); });
         root.addView(save);
+
+        Button aiCore = button("FREE AI CORE SETUP");
+        aiCore.setOnClickListener(v -> startActivity(new Intent(this, CoreSettingsActivity.class)));
+        root.addView(aiCore);
+
+        TextView coreState = tv("AI CORE: " + AtlasCore.status(this), 13);
+        root.addView(coreState);
 
         Button tools = button("WHAT CAN ATLAS ACCESS?");
         tools.setOnClickListener(v -> speakReply(CapabilityManager.summary(this), false));
@@ -291,6 +298,8 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         }
         if (low.equals("what do you remember") || low.equals("what do you remember?")) { speakReply(memorySummary(), conversationMode); return; }
         if (low.equals("what did i miss") || low.equals("what did i miss?")) { speakReply(notificationSummary(), conversationMode); return; }
+        if (low.equals("core status") || low.equals("core status?")) { speakReply(AtlasCore.status(this), conversationMode); return; }
+        if (low.equals("setup core") || low.equals("core setup")) { startActivity(new Intent(this, CoreSettingsActivity.class)); speakReply("Opening free AI core setup.", false); return; }
         if (low.contains("battery")) { speakReply(DeviceContext.batterySummary(this), conversationMode); return; }
         if (low.contains("calendar") && (low.contains("what") || low.contains("next") || low.contains("schedule"))) { speakReply(CalendarTools.summary(this), conversationMode); return; }
         if (low.equals("read my texts") || low.equals("recent texts") || low.equals("what texts did i get")) { routeAction(action("read_sms", null, null), null); return; }
@@ -340,13 +349,12 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         if (low.equals("lock screen") || low.equals("lock the screen")) { routeAction(action("ui_lock_screen", null, null), null); return; }
         if (low.equals("what can you do") || low.equals("what can you access") || low.equals("capabilities")) { speakReply(CapabilityManager.summary(this), conversationMode); return; }
 
-        String base = AtlasStore.coreUrl(this);
-        if (base.isEmpty()) {
-            speakReply("My phone-agent layer is active. I can control apps and the interface, use contacts, calls, texts, media, calendar, location, notifications, camera, flashlight, clipboard, and local memory. Add Atlas Core for general intelligence and multi-step reasoning.", conversationMode);
+        if (!AtlasCore.isConfigured(this) && AtlasStore.coreUrl(this).isEmpty()) {
+            speakReply("Atlas 1.1 is ready for a free AI core. Tap Free AI Core Setup and add any OpenRouter, Groq, or Gemini free-tier API key.", conversationMode);
             return;
         }
-        status.setText("THINKING");
-        new Thread(() -> callCore(base, text)).start();
+        status.setText("THINKING - " + AtlasCore.shortStatus(this));
+        new Thread(() -> callCore("", text)).start();
     }
 
     private boolean isYes(String s) { return s.equals("yes") || s.equals("confirm") || s.equals("do it") || s.equals("yes do it") || s.equals("go ahead"); }
@@ -414,46 +422,30 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
         return a.trim() + " " + b.trim();
     }
 
-    private void callCore(String base, String text) {
+    private void callCore(String ignored, String text) {
         try {
-            String endpoint = base.endsWith("/") ? base + "api/chat" : base + "/api/chat";
-            JSONObject body = new JSONObject();
-            body.put("text", text);
-            body.put("device", "Titan 2");
-            body.put("source", "voice_or_text");
-            body.put("conversationId", conversationId);
-            JSONObject ctx = new JSONObject();
-            ctx.put("recentNotifications", AtlasStore.notifications(this));
-            ctx.put("localMemories", AtlasStore.memories(this));
-            ctx.put("recentConversation", AtlasStore.conversation(this));
-            ctx.put("device", DeviceContext.snapshot(this));
-            ctx.put("capabilities", CapabilityManager.snapshot(this));
-            ctx.put("upcomingCalendar", CalendarTools.upcoming(this));
-            ctx.put("recentSms", SmsTools.recent(this));
-            body.put("context", ctx);
-
-            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-            HttpURLConnection c = (HttpURLConnection)new URL(endpoint).openConnection();
-            c.setConnectTimeout(12000); c.setReadTimeout(45000); c.setRequestMethod("POST"); c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json");
-            try (OutputStream os = c.getOutputStream()) { os.write(bytes); }
-            int code = c.getResponseCode();
-            BufferedReader br = new BufferedReader(new InputStreamReader(code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream()));
-            StringBuilder sb = new StringBuilder(); String line;
-            while ((line = br.readLine()) != null) sb.append(line);
-            if (code < 200 || code >= 300) throw new Exception("Core HTTP " + code + " " + sb);
-            JSONObject out = new JSONObject(sb.toString());
+            JSONObject out = AtlasCore.ask(this, text, conversationId);
             String r = out.optString("reply", "");
+            JSONArray memories = out.optJSONArray("memories");
+            if (memories != null) {
+                for (int i = 0; i < memories.length(); i++) {
+                    String memory = memories.optString(i, "").trim();
+                    if (!memory.isEmpty()) AtlasStore.remember(this, memory);
+                }
+            }
             JSONArray actions = out.optJSONArray("actions");
             JSONObject single = out.optJSONObject("action");
+            String provider = out.optString("provider", "core");
+            final String shown = r.isEmpty() ? "Atlas core returned no reply." : r;
             runOnUiThread(() -> {
+                status.setText("CORE: " + provider.toUpperCase(Locale.US));
                 if (actions != null && actions.length() > 0) {
                     queuedActions = actions;
-                    runQueuedActions(r);
+                    runQueuedActions(shown);
                 } else if (single != null) {
-                    routeAction(single, r);
+                    routeAction(single, shown);
                 } else {
-                    speakReply(r.isEmpty() ? "Atlas Core returned no reply." : r, conversationMode);
+                    speakReply(shown, conversationMode);
                 }
             });
         } catch (Exception e) {
