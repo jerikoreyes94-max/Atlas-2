@@ -3,7 +3,7 @@ name: Build Atlas v5 APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: write
@@ -28,20 +28,13 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      # ---------------------------------------------------------
-      # ATLAS SIGNING KEY
-      # Restore the same signing key for future Atlas versions.
-      # ---------------------------------------------------------
       - name: Restore Atlas signing key
-        id: atlas-signing-cache
+        id: atlas-key-cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.android/debug.keystore
-          key: atlas-personalai-debug-signing-v5
+          path: .atlas-signing/atlas.jks
+          key: atlas-personalai-signing-v5-stable
 
-      # ---------------------------------------------------------
-      # ANDROID SDK
-      # ---------------------------------------------------------
       - name: Android SDK
         uses: android-actions/setup-android@v3
 
@@ -49,22 +42,8 @@ jobs:
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
-          sdkmanager \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "platform-tools"
-
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "Build tools:"
-          ls -la "$ANDROID_HOME/build-tools/36.0.0"
-
-      # ---------------------------------------------------------
-      # RESTORE THE WORKING ATLAS V5 SOURCE
-      #
-      # The full v5 source was embedded in the earlier v5 workflow
-      # stored in GitHub history. Recover that exact source.
-      # ---------------------------------------------------------
       - name: Restore Atlas v5 source
         shell: bash
         run: |
@@ -82,140 +61,97 @@ jobs:
 
           url = "https://raw.githubusercontent.com/jerikoreyes94-max/Atlas-2/dc1a7593b0ce1e9ab551826816b911a1ab0da9d7/.github/workflows/Atlas-v5-one-click-build.yml"
 
-          print("Downloading stored Atlas v5 source...")
-
-          text = urlopen(
-              url,
-              timeout=30
-          ).read().decode("utf-8")
+          text = urlopen(url, timeout=30).read().decode("utf-8")
 
           marker = "cat > /tmp/atlas-v5.b64 <<'ATLAS'"
-
-          if marker not in text:
-              raise RuntimeError(
-                  "Could not locate stored Atlas v5 source payload."
-              )
-
           start = text.index(marker) + len(marker)
           end = text.index("\nATLAS", start)
 
-          payload = "".join(
-              text[start:end].split()
-          )
+          payload = "".join(text[start:end].split())
 
-          archive = base64.b64decode(
-              payload,
-              validate=True
-          )
-
-          Path(
-              "/tmp/atlas-v5.tar.xz"
-          ).write_bytes(archive)
-
-          print(
-              "Recovered Atlas v5 source archive:",
-              len(archive),
-              "bytes"
+          Path("/tmp/atlas-v5.tar.xz").write_bytes(
+              base64.b64decode(payload, validate=True)
           )
           PY
 
           tar -xJf /tmp/atlas-v5.tar.xz
 
-          echo "Checking recovered source..."
-
-          test -f settings.gradle
-          test -f build.gradle
-          test -f gradle.properties
-
           test -f app/build.gradle
+          test -f app/src/main/java/com/atlas/personalai/MainActivity.java
+          test -f app/src/main/res/drawable-nodpi/atlas_icon.jpg
 
-          test -f \
-            app/src/main/java/com/atlas/personalai/MainActivity.java
+          grep -q "versionCode 500" app/build.gradle
 
-          test -f \
-            app/src/main/java/com/atlas/personalai/AtlasStore.java
+      - name: Create permanent Atlas signing key
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          test -f \
-            app/src/main/res/drawable-nodpi/atlas_icon.jpg
+          mkdir -p .atlas-signing
 
-          grep -q \
-            "versionCode 500" \
-            app/build.gradle
+          if [ ! -f .atlas-signing/atlas.jks ]; then
+            keytool -genkeypair \
+              -keystore .atlas-signing/atlas.jks \
+              -storetype PKCS12 \
+              -storepass atlas-local-v5 \
+              -keypass atlas-local-v5 \
+              -alias atlas \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 36500 \
+              -dname "CN=Atlas Personal AI, OU=Personal, O=Atlas, C=US"
+          fi
 
-          grep -q \
-            'PREF = "atlas_v4"' \
-            app/src/main/java/com/atlas/personalai/AtlasStore.java
+          keytool \
+            -list \
+            -keystore .atlas-signing/atlas.jks \
+            -storepass atlas-local-v5 \
+            -alias atlas
 
-          echo "Atlas v5 source restored successfully."
+          cp app/build.gradle /tmp/atlas-build.gradle.clean
 
-      # ---------------------------------------------------------
-      # BUILD
-      # ---------------------------------------------------------
+          cat >> app/build.gradle <<'GRADLE'
+
+          android {
+              signingConfigs {
+                  atlasPersistent {
+                      storeFile file("$rootDir/.atlas-signing/atlas.jks")
+                      storePassword "atlas-local-v5"
+                      keyAlias "atlas"
+                      keyPassword "atlas-local-v5"
+                  }
+              }
+
+              buildTypes {
+                  debug {
+                      signingConfig signingConfigs.atlasPersistent
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Save Atlas signing key
+        if: steps.atlas-key-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .atlas-signing/atlas.jks
+          key: atlas-personalai-signing-v5-stable
+
       - name: Build Atlas v5
         shell: bash
         run: |
           set -euo pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            :app:assembleDebug
-
-      # ---------------------------------------------------------
-      # MAKE SURE THE DEBUG KEY EXISTS
-      #
-      # Gradle generates ~/.android/debug.keystore automatically
-      # when one did not already exist.
-      # ---------------------------------------------------------
-      - name: Check Atlas signing key
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
-            echo "ERROR: Android debug keystore was not generated."
-            exit 1
-          fi
-
-          echo "Atlas signing key exists."
-
-          keytool \
-            -list \
-            -v \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            | grep -E \
-              "Owner:|SHA256:" \
-            || true
-
-      # ---------------------------------------------------------
-      # SAVE SIGNING KEY IMMEDIATELY
-      #
-      # This is deliberately done BEFORE verification/upload.
-      # Even if a later step fails, the signer has already been
-      # preserved for v6, v7, etc.
-      # ---------------------------------------------------------
-      - name: Save Atlas signing key
-        if: steps.atlas-signing-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: atlas-personalai-debug-signing-v5
-
-      # ---------------------------------------------------------
-      # PREPARE APK
-      # ---------------------------------------------------------
-      - name: Prepare Atlas v5 APK
+      - name: Prepare APK
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p dist
 
-          test -f \
-            app/build/outputs/apk/debug/app-debug.apk
+          test -f app/build/outputs/apk/debug/app-debug.apk
 
           cp \
             app/build/outputs/apk/debug/app-debug.apk \
@@ -223,40 +159,12 @@ jobs:
 
           test -s dist/Atlas-v5.apk
 
-          echo "Atlas v5 APK created:"
-          ls -lh dist/Atlas-v5.apk
-
-      # ---------------------------------------------------------
-      # VERIFY APK
-      #
-      # FIXED:
-      # Previous workflow called "apksigner" directly.
-      # GitHub runner did not have that directory on PATH.
-      #
-      # This uses the exact Android Build Tools path instead.
-      # ---------------------------------------------------------
-      - name: Verify Atlas v5 APK
+      - name: Verify APK signature
         shell: bash
         run: |
           set -euo pipefail
 
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-
-          if [ ! -x "$APKSIGNER" ]; then
-            echo "ERROR: apksigner was not found:"
-            echo "$APKSIGNER"
-
-            find \
-              "$ANDROID_HOME/build-tools" \
-              -name apksigner \
-              -type f \
-              -print
-
-            exit 1
-          fi
-
-          echo "Using:"
-          echo "$APKSIGNER"
 
           "$APKSIGNER" \
             verify \
@@ -265,98 +173,45 @@ jobs:
             dist/Atlas-v5.apk \
             | tee dist/signer.txt
 
-          echo
-          echo "APK signature verified."
-
-      # ---------------------------------------------------------
-      # SHA-256
-      # ---------------------------------------------------------
-      - name: Hash Atlas v5 APK
+      - name: Verify package and version
         shell: bash
         run: |
           set -euo pipefail
 
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+
+          "$AAPT" \
+            dump badging \
+            dist/Atlas-v5.apk \
+            | tee dist/package.txt
+
+          grep -q \
+            "package: name='com.atlas.personalai'" \
+            dist/package.txt
+
+          grep -q \
+            "versionCode='500'" \
+            dist/package.txt
+
+      - name: Hash APK
+        shell: bash
+        run: |
           sha256sum \
             dist/Atlas-v5.apk \
             | tee dist/Atlas-v5.sha256
 
-      # ---------------------------------------------------------
-      # BASIC APK STRUCTURE CHECK
-      # ---------------------------------------------------------
-      - name: Check APK structure
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 <<'PY'
-          import zipfile
-          from pathlib import Path
-
-          apk = Path("dist/Atlas-v5.apk")
-
-          if not apk.exists():
-              raise RuntimeError(
-                  "Atlas-v5.apk does not exist."
-              )
-
-          if apk.stat().st_size == 0:
-              raise RuntimeError(
-                  "Atlas-v5.apk is empty."
-              )
-
-          with zipfile.ZipFile(apk) as z:
-              names = set(z.namelist())
-
-              required = {
-                  "AndroidManifest.xml",
-                  "classes.dex",
-                  "resources.arsc",
-              }
-
-              missing = required - names
-
-              if missing:
-                  raise RuntimeError(
-                      f"APK missing required files: {missing}"
-                  )
-
-              signatures = [
-                  n for n in names
-                  if n.startswith("META-INF/")
-              ]
-
-              print(
-                  "APK size:",
-                  apk.stat().st_size,
-                  "bytes"
-              )
-
-              print(
-                  "APK entries:",
-                  len(names)
-              )
-
-              print(
-                  "META-INF entries:",
-                  len(signatures)
-              )
-
-              print(
-                  "APK ZIP structure looks valid."
-              )
-          PY
-
-      # ---------------------------------------------------------
-      # SAVE READABLE SOURCE FOR V6+
-      # ---------------------------------------------------------
-      - name: Save readable Atlas v5 source
+      - name: Save readable Atlas source
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
 
+          cp \
+            /tmp/atlas-build.gradle.clean \
+            app/build.gradle
+
           printf \
-            '.gradle/\n**/build/\nlocal.properties\n' \
+            '.gradle/\n**/build/\nlocal.properties\n.atlas-signing/\n' \
             > .gitignore
 
           git config \
@@ -375,19 +230,13 @@ jobs:
             app/build.gradle \
             app/src
 
-          if git diff --cached --quiet; then
-            echo "Atlas v5 source is already stored."
-            exit 0
+          if ! git diff --cached --quiet; then
+            git commit \
+              -m "Store readable Atlas v5 source [skip ci]"
+
+            git push
           fi
 
-          git commit \
-            -m "Store Atlas v5 readable source [skip ci]"
-
-          git push
-
-      # ---------------------------------------------------------
-      # UPLOAD REAL APK
-      # ---------------------------------------------------------
       - name: Upload Atlas v5 APK
         uses: actions/upload-artifact@v4
         with:
@@ -396,5 +245,6 @@ jobs:
             dist/Atlas-v5.apk
             dist/Atlas-v5.sha256
             dist/signer.txt
+            dist/package.txt
           if-no-files-found: error
           retention-days: 30
