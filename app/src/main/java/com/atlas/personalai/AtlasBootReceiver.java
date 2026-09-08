@@ -5,10 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 
 public class AtlasBootReceiver extends BroadcastReceiver {
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        try {
-            context.startForegroundService(new Intent(context, AtlasForegroundService.class));
-        } catch (Exception ignored) {}
+    @Override public void onReceive(Context c, Intent i) {
+        try { c.startForegroundService(new Intent(c, AtlasForegroundService.class)); }
+        catch (Exception ignored) {}
     }
 }

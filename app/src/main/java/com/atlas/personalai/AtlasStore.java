@@ -32,7 +32,7 @@ public final class AtlasStore {
     public static void remember(Context c, String text) {
         JSONArray a = memories(c);
         a.put(text);
-        while (a.length() > 100) a.remove(0);
+        while (a.length() > 250) a.remove(0);
         p(c).edit().putString("memories", a.toString()).apply();
     }
 
@@ -44,7 +44,7 @@ public final class AtlasStore {
     public static void addNotification(Context c, String text) {
         JSONArray a = notifications(c);
         a.put(text);
-        while (a.length() > 150) a.remove(0);
+        while (a.length() > 250) a.remove(0);
         p(c).edit().putString("notifications", a.toString()).apply();
     }
 
@@ -61,7 +61,7 @@ public final class AtlasStore {
             o.put("text", text);
             o.put("time", System.currentTimeMillis());
             a.put(o);
-            while (a.length() > 40) a.remove(0);
+            while (a.length() > 80) a.remove(0);
             p(c).edit().putString("conversation", a.toString()).apply();
         } catch (Exception ignored) {}
     }

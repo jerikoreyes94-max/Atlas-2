@@ -5,8 +5,7 @@ import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 
 public class AtlasNotificationListener extends NotificationListenerService {
-    @Override
-    public void onNotificationPosted(StatusBarNotification sbn) {
+    @Override public void onNotificationPosted(StatusBarNotification sbn) {
         try {
             Notification n = sbn.getNotification();
             CharSequence title = n.extras.getCharSequence(Notification.EXTRA_TITLE, "");

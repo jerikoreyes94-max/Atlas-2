@@ -5,5 +5,5 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories { google(); mavenCentral() }
 }
-rootProject.name = "AtlasV5"
+rootProject.name = "AtlasV7"
 include ':app'

