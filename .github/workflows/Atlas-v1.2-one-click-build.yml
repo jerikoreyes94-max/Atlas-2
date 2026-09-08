@@ -1,0 +1,1980 @@
+name: Build Atlas 1.3 Life Agent
+ 
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/Atlas-v1.3-life-agent.yml'
+ 
+permissions:
+  contents: read
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+ 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+ 
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+ 
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+ 
+      - name: Restore permanent Atlas signer
+        uses: actions/cache/restore@v4
+        with:
+          path: .atlas-signing/atlas.jks
+          key: atlas-personalai-signing-v5-stable
+          fail-on-cache-miss: true
+ 
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+ 
+      - name: Install Android 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+ 
+      - name: Install Atlas 1.3 integrated core
+        shell: bash
+        run: |
+          set -euo pipefail
+ 
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/atlas/personalai/MainActivity.java
+          test -f app/src/main/java/com/atlas/personalai/ActionEngine.java
+          test -f app/src/main/java/com/atlas/personalai/AtlasStore.java
+          test -f app/src/main/java/com/atlas/personalai/CapabilityManager.java
+          test -f app/src/main/java/com/atlas/personalai/DeviceContext.java
+          test -f .atlas-signing/atlas.jks
+ 
+          python3 <<'PYCODE'
+          from pathlib import Path
+          import re
+ 
+          build = Path('app/build.gradle')
+          s = build.read_text()
+          s = re.sub(r'versionCode\s+\d+', 'versionCode 1300', s, count=1)
+          s = re.sub(r"versionName\s+'[^']+'", "versionName '1.3.0'", s, count=1)
+          build.write_text(s)
+ 
+          manifest = Path('app/src/main/AndroidManifest.xml')
+          m = manifest.read_text()
+          if 'android:name=".CoreSettingsActivity"' not in m:
+              anchor = '        <activity\n            android:name=".MainActivity"'
+              if anchor not in m:
+                  raise SystemExit('MainActivity manifest anchor missing')
+              m = m.replace(anchor, '        <activity android:name=".CoreSettingsActivity" android:exported="false" />\n\n' + anchor, 1)
+          manifest.write_text(m)
+ 
+          main = Path('app/src/main/java/com/atlas/personalai/MainActivity.java')
+          t = main.read_text()
+          t = t.replace('ATLAS 1.1', 'ATLAS 1.3 LIFE AGENT')
+          t = t.replace('ATLAS v7 FULL', 'ATLAS 1.3 LIFE AGENT')
+          t = t.replace('FREE AI CORE SETUP', 'CORE SETTINGS / PROVIDERS')
+          t = t.replace('Atlas 1.1 is ready for a free AI core.', 'Atlas 1.3 integrated core is ready. Configure at least one AI provider in Core Settings.')
+          t = t.replace('Opening free AI core setup.', 'Opening Atlas 1.3 core settings.')
+ 
+          banner_anchor = '        status = tv("STARTING...", 16); root.addView(status);\n        accessInfo = tv("ACCESS: checking...", 13); root.addView(accessInfo);'
+          if 'CORE / BRAIN STATUS' not in t and banner_anchor in t:
+              banner = '''        status = tv("STARTING...", 16); root.addView(status);
+                  TextView brainState = tv("CORE / BRAIN STATUS: " + AtlasCore.status(this), 15);
+                  brainState.setTypeface(Typeface.DEFAULT_BOLD);
+                  root.addView(brainState);
+                  Button brain = button("OPEN CORE / BRAIN");
+                  brain.setOnClickListener(v -> startActivity(new Intent(this, CoreSettingsActivity.class)));
+                  root.addView(brain);
+                  accessInfo = tv("ACCESS: checking...", 13); root.addView(accessInfo);'''
+              t = t.replace(banner_anchor, banner, 1)
+ 
+          if 'low.equals("core status")' not in t:
+              anchor = '        if (low.equals("what did i miss") || low.equals("what did i miss?")) { speakReply(notificationSummary(), conversationMode); return; }'
+              if anchor in t:
+                  addition = anchor + '\n        if (low.equals("core status") || low.equals("core status?")) { speakReply(AtlasCore.status(this), conversationMode); return; }\n        if (low.equals("setup core") || low.equals("core setup") || low.equals("open core")) { startActivity(new Intent(this, CoreSettingsActivity.class)); speakReply("Opening Atlas 1.3 core settings.", false); return; }'
+                  t = t.replace(anchor, addition, 1)
+ 
+          old_route = '''        String base = AtlasStore.coreUrl(this);
+                  if (base.isEmpty()) {
+            speakReply("My phone-agent layer is active. I can control apps and the interface, use contacts, calls, texts, media, calendar, location, notifications, camera, flashlight, clipboard, and local memory. Add Atlas Core for general intelligence and multi-step reasoning.", conversationMode);
+            return;
+                  }
+                  status.setText("THINKING");
+                  new Thread(() -> callCore(base, text)).start();
+          '''
+          new_route = '''        if (!AtlasCore.isConfigured(this) && AtlasStore.coreUrl(this).isEmpty()) {
+            speakReply("Atlas 1.3 phone controls are online, but the AI core needs a provider. Open Core Settings and add an OpenRouter, Groq, or Gemini key.", conversationMode);
+            return;
+                  }
+                  status.setText("THINKING - " + AtlasCore.shortStatus(this));
+                  new Thread(() -> callCore("", text)).start();
+          '''
+          if old_route in t:
+              t = t.replace(old_route, new_route, 1)
+ 
+          start = t.find('    private void callCore(')
+          end = t.find('    private String memorySummary()', start)
+          if start >= 0 and end > start:
+              replacement = '''    private void callCore(String ignored, String text) {
+                  try {
+            JSONObject out = AtlasCore.ask(this, text, conversationId);
+            String r = out.optString("reply", "");
+            JSONArray memories = out.optJSONArray("memories");
+            if (memories != null) {
+                for (int i = 0; i < memories.length(); i++) {
+                    String memory = memories.optString(i, "").trim();
+                    if (!memory.isEmpty()) AtlasStore.remember(this, memory);
+                }
+            }
+            JSONArray actions = out.optJSONArray("actions");
+            JSONObject single = out.optJSONObject("action");
+            String provider = out.optString("provider", "core");
+            final String shown = r.isEmpty() ? "Atlas core returned no reply." : r;
+            runOnUiThread(() -> {
+                status.setText("CORE: " + provider.toUpperCase(Locale.US));
+                if (actions != null && actions.length() > 0) {
+                    queuedActions = actions;
+                    runQueuedActions(shown);
+                } else if (single != null) {
+                    routeAction(single, shown);
+                } else {
+                    speakReply(shown, conversationMode);
+                }
+            });
+                  } catch (Exception e) {
+            runOnUiThread(() -> {
+                status.setText("CORE ERROR");
+                speakReply("Core error: " + e.getMessage(), conversationMode);
+            });
+                  }
+              }
+ 
+          '''
+              t = t[:start] + replacement + t[end:]
+          else:
+              raise SystemExit('callCore method markers missing')
+ 
+          main.write_text(t)
+          PYCODE
+ 
+          cat > app/src/main/java/com/atlas/personalai/SecureStore.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.security.keystore.KeyGenParameterSpec;
+          import android.security.keystore.KeyProperties;
+          import android.util.Base64;
+          import java.nio.charset.StandardCharsets;
+          import java.security.KeyStore;
+          import javax.crypto.Cipher;
+          import javax.crypto.KeyGenerator;
+          import javax.crypto.SecretKey;
+          import javax.crypto.spec.GCMParameterSpec;
+ 
+          public final class SecureStore {
+              private static final String ALIAS = "atlas_core_v13";
+              private static final String PREF = "atlas_secure_core_v13";
+ 
+              private SecureStore() {}
+ 
+              private static SharedPreferences prefs(Context c) {
+                  return c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+              }
+ 
+              private static SecretKey key() throws Exception {
+                  KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+                  ks.load(null);
+                  if (!ks.containsAlias(ALIAS)) {
+                      KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+                      kg.init(new KeyGenParameterSpec.Builder(
+                              ALIAS,
+                              KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                              .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                              .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                              .setRandomizedEncryptionRequired(true)
+                              .build());
+                      kg.generateKey();
+                  }
+                  return ((KeyStore.SecretKeyEntry) ks.getEntry(ALIAS, null)).getSecretKey();
+              }
+ 
+              public static void set(Context c, String name, String value) {
+                  try {
+                      if (value == null || value.trim().isEmpty()) return;
+                      Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                      cipher.init(Cipher.ENCRYPT_MODE, key());
+                      byte[] encrypted = cipher.doFinal(value.trim().getBytes(StandardCharsets.UTF_8));
+                      String packed = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" +
+                              Base64.encodeToString(encrypted, Base64.NO_WRAP);
+                      prefs(c).edit().putString(name, packed).apply();
+                  } catch (Exception e) {
+                      throw new RuntimeException("Secure core storage failed", e);
+                  }
+              }
+ 
+              public static String get(Context c, String name) {
+                  try {
+                      String packed = prefs(c).getString(name, "");
+                      if (packed == null || packed.isEmpty()) return "";
+                      String[] parts = packed.split(":", 2);
+                      if (parts.length != 2) return "";
+                      byte[] iv = Base64.decode(parts[0], Base64.NO_WRAP);
+                      byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
+                      Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                      cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, iv));
+                      return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+                  } catch (Exception e) {
+                      return "";
+                  }
+              }
+ 
+              public static boolean has(Context c, String name) {
+                  return !get(c, name).isEmpty();
+              }
+ 
+              public static void remove(Context c, String name) {
+                  prefs(c).edit().remove(name).apply();
+              }
+ 
+              public static void clearCoreKeys(Context c) {
+                  prefs(c).edit().clear().apply();
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasCore.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.io.BufferedReader;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+ 
+          public final class AtlasCore {
+              private static final String HEALTH_PREF = "atlas_core_health_v13";
+              private static final int MAX_ACTIONS = 8;
+              private static final Set<String> ALLOWED_ACTIONS = new HashSet<>(Arrays.asList(
+                      "open_app", "navigate", "web_search", "get_location", "call_contact", "dial_number",
+                      "send_sms", "read_sms", "create_calendar_event", "media_play", "media_pause",
+                      "media_next", "media_previous", "volume_up", "volume_down", "flashlight_on",
+                      "flashlight_off", "open_camera", "clipboard_copy", "clipboard_read", "answer_call",
+                      "end_call", "ui_back", "ui_home", "ui_recents", "ui_notifications",
+                      "ui_quick_settings", "ui_scroll_down", "ui_scroll_up", "ui_swipe_up",
+                      "ui_swipe_down", "ui_swipe_left", "ui_swipe_right", "ui_click_text",
+                      "ui_type_text", "ui_screenshot", "ui_lock_screen"
+              ));
+ 
+              private AtlasCore() {}
+ 
+              public static boolean isConfigured(Context c) {
+                  return SecureStore.has(c, "openrouter_key") ||
+                          SecureStore.has(c, "groq_key") ||
+                          SecureStore.has(c, "gemini_key");
+              }
+ 
+              public static String shortStatus(Context c) {
+                  if (SecureStore.has(c, "groq_key")) return "GROQ WEB + CORE";
+                  if (SecureStore.has(c, "openrouter_key")) return "OPENROUTER FREE";
+                  if (SecureStore.has(c, "gemini_key")) return "GEMINI 2.5";
+                  if (!AtlasStore.coreUrl(c).isEmpty()) return "CUSTOM CORE";
+                  return "NO PROVIDER";
+              }
+ 
+              public static String status(Context c) {
+                  List<String> ready = new ArrayList<>();
+                  if (SecureStore.has(c, "openrouter_key")) ready.add("OpenRouter free");
+                  if (SecureStore.has(c, "groq_key")) ready.add("Groq Compound web");
+                  if (SecureStore.has(c, "gemini_key")) ready.add("Gemini 2.5 Flash-Lite");
+                  if (!AtlasStore.coreUrl(c).isEmpty()) ready.add("custom fallback");
+ 
+                  SharedPreferences hp = c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE);
+                  String last = hp.getString("last_provider", "");
+                  long lastOk = hp.getLong("last_success", 0L);
+ 
+                  if (ready.isEmpty()) {
+                      return "Integrated core installed, but no AI provider is configured yet.";
+                  }
+                  String result = "Integrated core ready: " + String.join(" | ", ready);
+                  if (!last.isEmpty() && lastOk > 0L) result += ". Last success: " + last;
+                  return result;
+              }
+ 
+              public static JSONObject ask(Context c, String text, String conversationId) throws Exception {
+                  String request = text == null ? "" : text.trim();
+                  if (request.isEmpty()) return empty("What do you want me to do?");
+ 
+                  List<String> errors = new ArrayList<>();
+                  boolean fresh = needsFreshWeb(request);
+ 
+                  if (fresh && SecureStore.has(c, "groq_key")) {
+                      try { return finish(c, normalize(callGroq(c, request, conversationId), "groq-compound")); }
+                      catch (Exception e) { errors.add("Groq: " + shortError(e)); recordFailure(c, "groq-compound", e); }
+                  }
+ 
+                  if (SecureStore.has(c, "openrouter_key")) {
+                      try { return finish(c, normalize(callOpenRouter(c, request, conversationId), "openrouter-free")); }
+                      catch (Exception e) { errors.add("OpenRouter: " + shortError(e)); recordFailure(c, "openrouter-free", e); }
+                  }
+ 
+                  if (!fresh && SecureStore.has(c, "groq_key")) {
+                      try { return finish(c, normalize(callGroq(c, request, conversationId), "groq-compound")); }
+                      catch (Exception e) { errors.add("Groq: " + shortError(e)); recordFailure(c, "groq-compound", e); }
+                  }
+ 
+                  if (SecureStore.has(c, "gemini_key")) {
+                      try { return finish(c, normalize(callGemini(c, request, conversationId), "gemini-2.5-flash-lite")); }
+                      catch (Exception e) { errors.add("Gemini: " + shortError(e)); recordFailure(c, "gemini-2.5-flash-lite", e); }
+                  }
+ 
+                  if (!AtlasStore.coreUrl(c).isEmpty()) {
+                      try { return finish(c, callCustomCore(c, request, conversationId)); }
+                      catch (Exception e) { errors.add("Custom: " + shortError(e)); recordFailure(c, "custom-core", e); }
+                  }
+ 
+                  if (errors.isEmpty()) {
+                      throw new Exception("No AI provider configured. Open Core Settings and add one key.");
+                  }
+                  throw new Exception("All configured core providers failed. " + String.join(" | ", errors));
+              }
+ 
+              private static JSONObject finish(Context c, JSONObject out) throws Exception {
+                  sanitizeActions(out);
+                  String provider = out.optString("provider", "core");
+                  recordSuccess(c, provider);
+                  return out;
+              }
+ 
+              private static JSONObject empty(String reply) throws Exception {
+                  return new JSONObject()
+                          .put("reply", reply)
+                          .put("actions", new JSONArray())
+                          .put("memories", new JSONArray())
+                          .put("provider", "local-core");
+              }
+ 
+              private static boolean needsFreshWeb(String text) {
+                  String s = text.toLowerCase(Locale.US);
+                  String[] hints = {
+                          "today", "latest", "current", "news", "weather", "score", "scores", "price",
+                          "open now", "right now", "this week", "this month", "search the web", "look online",
+                          "find online", "what happened", "who is the current", "traffic", "stock", "market"
+                  };
+                  for (String h : hints) if (s.contains(h)) return true;
+                  return false;
+              }
+ 
+              private static String callOpenRouter(Context c, String text, String conversationId) throws Exception {
+                  JSONObject body = openAiBody(c, text, conversationId, "openrouter/free");
+                  body.put("response_format", new JSONObject().put("type", "json_object"));
+                  HttpURLConnection h = connection("https://openrouter.ai/api/v1/chat/completions");
+                  h.setRequestProperty("Authorization", "Bearer " + SecureStore.get(c, "openrouter_key"));
+                  h.setRequestProperty("HTTP-Referer", "https://github.com/jerikoreyes94-max/Atlas-2");
+                  h.setRequestProperty("X-Title", "Atlas Personal AI 1.2");
+                  String raw = post(h, body.toString());
+                  JSONObject o = new JSONObject(raw);
+                  return o.getJSONArray("choices").getJSONObject(0)
+                          .getJSONObject("message").optString("content", "");
+              }
+ 
+              private static String callGroq(Context c, String text, String conversationId) throws Exception {
+                  JSONObject body = openAiBody(c, text, conversationId, "groq/compound");
+                  HttpURLConnection h = connection("https://api.groq.com/openai/v1/chat/completions");
+                  h.setRequestProperty("Authorization", "Bearer " + SecureStore.get(c, "groq_key"));
+                  String raw = post(h, body.toString());
+                  JSONObject o = new JSONObject(raw);
+                  return o.getJSONArray("choices").getJSONObject(0)
+                          .getJSONObject("message").optString("content", "");
+              }
+ 
+              private static String callGemini(Context c, String text, String conversationId) throws Exception {
+                  String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
+                  JSONObject body = new JSONObject();
+                  JSONArray contents = new JSONArray();
+                  JSONObject content = new JSONObject();
+                  JSONArray parts = new JSONArray();
+                  parts.put(new JSONObject().put("text",
+                          systemPrompt() + "\n\nPHONE_CONTEXT:\n" + context(c, conversationId, text).toString() +
+                                  "\n\nUSER REQUEST:\n" + text));
+                  content.put("parts", parts);
+                  contents.put(content);
+                  body.put("contents", contents);
+                  JSONObject config = new JSONObject();
+                  config.put("temperature", 0.2);
+                  config.put("maxOutputTokens", 1800);
+                  config.put("responseMimeType", "application/json");
+                  body.put("generationConfig", config);
+ 
+                  HttpURLConnection h = connection(endpoint);
+                  h.setRequestProperty("x-goog-api-key", SecureStore.get(c, "gemini_key"));
+                  String raw = post(h, body.toString());
+                  JSONObject o = new JSONObject(raw);
+                  return o.getJSONArray("candidates").getJSONObject(0)
+                          .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
+                          .optString("text", "");
+              }
+ 
+              private static JSONObject callCustomCore(Context c, String text, String conversationId) throws Exception {
+                  String base = AtlasStore.coreUrl(c).trim();
+                  String endpoint = base.endsWith("/") ? base + "api/chat" : base + "/api/chat";
+                  JSONObject body = new JSONObject();
+                  body.put("text", text);
+                  body.put("source", "atlas-android-1.2");
+                  body.put("conversationId", conversationId);
+                  body.put("context", context(c, conversationId, text));
+                  HttpURLConnection h = connection(endpoint);
+                  String raw = post(h, body.toString());
+                  JSONObject out = new JSONObject(raw);
+                  if (!out.has("reply")) out.put("reply", "Done.");
+                  if (!out.has("actions")) out.put("actions", new JSONArray());
+                  if (!out.has("memories")) out.put("memories", new JSONArray());
+                  out.put("provider", "custom-core");
+                  return out;
+              }
+ 
+              private static JSONObject openAiBody(Context c, String text, String conversationId, String model) throws Exception {
+                  JSONObject body = new JSONObject();
+                  body.put("model", model);
+                  body.put("temperature", 0.2);
+                  body.put("max_tokens", 1800);
+                  JSONArray messages = new JSONArray();
+                  messages.put(message("system", systemPrompt()));
+                  messages.put(message("user",
+                          "PHONE_CONTEXT:\n" + context(c, conversationId, text).toString() +
+                                  "\n\nUSER REQUEST:\n" + text));
+                  body.put("messages", messages);
+                  return body;
+              }
+ 
+              private static JSONObject message(String role, String content) throws Exception {
+                  return new JSONObject().put("role", role).put("content", content);
+              }
+ 
+              private static JSONObject context(Context c, String conversationId, String request) {
+                  JSONObject x = new JSONObject();
+                  try {
+                      String q = request == null ? "" : request.toLowerCase(Locale.US);
+                      boolean needMessages = containsAny(q, "text", "sms", "message", "messages");
+                      boolean needNotifications = containsAny(q, "notification", "notifications", "missed", "what did i miss");
+                      boolean needCalendar = containsAny(q, "calendar", "schedule", "appointment", "meeting", "event");
+                      boolean needLocation = containsAny(q, "where am i", "near me", "nearby", "navigate", "directions", "weather", "location", "traffic");
+ 
+                      x.put("conversationId", conversationId);
+                      x.put("timeMillis", System.currentTimeMillis());
+                      JSONObject device = DeviceContext.snapshot(c);
+                      if (!needLocation) device.remove("location");
+                      x.put("device", device);
+                      x.put("capabilities", CapabilityManager.snapshot(c));
+                      x.put("memories", tail(AtlasStore.memories(c), 40));
+                      x.put("recentConversation", tail(AtlasStore.conversation(c), 20));
+                      if (needNotifications) x.put("recentNotifications", tail(AtlasStore.notifications(c), 24));
+                      if (needCalendar) x.put("upcomingCalendar", CalendarTools.upcoming(c));
+                      if (needMessages) x.put("recentSms", SmsTools.recent(c));
+                  } catch (Exception ignored) {}
+                  return x;
+              }
+ 
+              private static boolean containsAny(String s, String... terms) {
+                  for (String t : terms) if (s.contains(t)) return true;
+                  return false;
+              }
+ 
+              private static JSONArray tail(JSONArray a, int max) {
+                  JSONArray out = new JSONArray();
+                  if (a == null) return out;
+                  int start = Math.max(0, a.length() - max);
+                  for (int i = start; i < a.length(); i++) out.put(a.opt(i));
+                  return out;
+              }
+ 
+              private static String systemPrompt() {
+                  return "You are Atlas 1.3, the user's personal Android AI core. " +
+                          "You are the reasoning and planning layer inside an Android phone agent. " +
+                          "Use supplied phone context when relevant and never invent device state. " +
+                          "The Android app, not you, enforces permissions and confirmations. " +
+                          "Return ONLY one valid JSON object and no markdown. Required schema: " +
+                          "{\"reply\":\"natural spoken answer\",\"actions\":[{\"type\":\"action_name\"}],\"memories\":[\"durable user facts/preferences\"]}. " +
+                          "Use an empty actions array when no phone action is needed. " +
+                          "Use memories only for durable user preferences or facts, never transient chatter. " +
+                          "Supported action types: open_app, navigate, web_search, get_location, call_contact, dial_number, send_sms, read_sms, create_calendar_event, " +
+                          "media_play, media_pause, media_next, media_previous, volume_up, volume_down, flashlight_on, flashlight_off, open_camera, clipboard_copy, clipboard_read, " +
+                          "answer_call, end_call, ui_back, ui_home, ui_recents, ui_notifications, ui_quick_settings, ui_scroll_down, ui_scroll_up, ui_swipe_up, ui_swipe_down, " +
+                          "ui_swipe_left, ui_swipe_right, ui_click_text, ui_type_text, ui_screenshot, ui_lock_screen. " +
+                          "For multi-step tasks, return actions in execution order. Never claim an action succeeded before the app reports it. " +
+                          "If required details are missing, ask the user rather than guessing. " +
+                          "For ordinary questions, answer directly with no action. Keep spoken replies concise unless the user asks for detail.";
+              }
+ 
+              private static JSONObject normalize(String raw, String provider) throws Exception {
+                  String s = raw == null ? "" : raw.trim();
+                  if (s.startsWith("```")) {
+                      int nl = s.indexOf('\n');
+                      if (nl >= 0) s = s.substring(nl + 1);
+                      if (s.endsWith("```")) s = s.substring(0, s.length() - 3).trim();
+                  }
+                  int a = s.indexOf('{');
+                  int b = s.lastIndexOf('}');
+                  JSONObject out;
+                  if (a >= 0 && b > a) {
+                      try { out = new JSONObject(s.substring(a, b + 1)); }
+                      catch (Exception e) { out = new JSONObject().put("reply", s); }
+                  } else {
+                      out = new JSONObject().put("reply", s);
+                  }
+                  if (!out.has("reply")) out.put("reply", "Done.");
+                  if (!out.has("actions")) out.put("actions", new JSONArray());
+                  if (!out.has("memories")) out.put("memories", new JSONArray());
+                  out.put("provider", provider);
+                  return out;
+              }
+ 
+              private static void sanitizeActions(JSONObject out) throws Exception {
+                  JSONArray source = out.optJSONArray("actions");
+                  if (source == null) source = new JSONArray();
+                  JSONArray clean = new JSONArray();
+                  for (int i = 0; i < source.length() && clean.length() < MAX_ACTIONS; i++) {
+                      JSONObject action = source.optJSONObject(i);
+                      if (action == null) continue;
+                      String type = action.optString("type", "").trim();
+                      if (ALLOWED_ACTIONS.contains(type)) clean.put(action);
+                  }
+                  out.put("actions", clean);
+ 
+                  JSONArray memories = out.optJSONArray("memories");
+                  if (memories == null) out.put("memories", new JSONArray());
+              }
+ 
+              private static HttpURLConnection connection(String endpoint) throws Exception {
+                  HttpURLConnection h = (HttpURLConnection) new URL(endpoint).openConnection();
+                  h.setConnectTimeout(15000);
+                  h.setReadTimeout(65000);
+                  h.setRequestMethod("POST");
+                  h.setDoOutput(true);
+                  h.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                  h.setRequestProperty("Accept", "application/json");
+                  return h;
+              }
+ 
+              private static String post(HttpURLConnection h, String json) throws Exception {
+                  byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+                  try (OutputStream os = h.getOutputStream()) { os.write(bytes); }
+                  int code = h.getResponseCode();
+                  InputStream in = code >= 200 && code < 300 ? h.getInputStream() : h.getErrorStream();
+                  String body = readAll(in);
+                  h.disconnect();
+                  if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " " + trim(body, 260));
+                  return body;
+              }
+ 
+              private static String readAll(InputStream in) throws Exception {
+                  if (in == null) return "";
+                  BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+                  StringBuilder sb = new StringBuilder();
+                  String line;
+                  while ((line = br.readLine()) != null) sb.append(line);
+                  return sb.toString();
+              }
+ 
+              private static String trim(String s, int max) {
+                  if (s == null) return "";
+                  String x = s.replace('\n', ' ').replace('\r', ' ').trim();
+                  return x.length() <= max ? x : x.substring(0, max);
+              }
+ 
+              private static String shortError(Exception e) {
+                  return trim(e == null ? "unknown" : e.getMessage(), 160);
+              }
+ 
+              private static void recordSuccess(Context c, String provider) {
+                  c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE).edit()
+                          .putString("last_provider", provider)
+                          .putLong("last_success", System.currentTimeMillis())
+                          .remove("last_error")
+                          .apply();
+              }
+ 
+              private static void recordFailure(Context c, String provider, Exception e) {
+                  c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE).edit()
+                          .putString("last_error_provider", provider)
+                          .putString("last_error", shortError(e))
+                          .putLong("last_error_time", System.currentTimeMillis())
+                          .apply();
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/CoreSettingsActivity.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Typeface;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import org.json.JSONObject;
+          import java.util.UUID;
+ 
+          public class CoreSettingsActivity extends Activity {
+              private EditText openRouter;
+              private EditText groq;
+              private EditText gemini;
+              private TextView status;
+              private TextView testResult;
+ 
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+ 
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(28, 28, 28, 28);
+ 
+                  TextView title = text("ATLAS 1.2 - INTEGRATED CORE", 27);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  title.setGravity(Gravity.CENTER_HORIZONTAL);
+                  root.addView(title);
+ 
+                  TextView installed = text("CORE CODE: INSTALLED IN APP", 17);
+                  installed.setTypeface(Typeface.DEFAULT_BOLD);
+                  installed.setGravity(Gravity.CENTER_HORIZONTAL);
+                  root.addView(installed);
+ 
+                  root.addView(text(
+                          "Atlas already contains the core router, phone-context builder, memory return path, action planner, provider failover, and action validation. " +
+                          "Add at least one AI provider key below to power general reasoning. Keys are encrypted with Android Keystore and never stored in GitHub.",
+                          15));
+ 
+                  status = text(AtlasCore.status(this), 15);
+                  status.setTypeface(Typeface.DEFAULT_BOLD);
+                  root.addView(status);
+ 
+                  openRouter = secretField("OpenRouter API key" + configured("openrouter_key"));
+                  root.addView(openRouter);
+                  Button orPage = button("GET / OPEN OPENROUTER KEY");
+                  orPage.setOnClickListener(v -> open("https://openrouter.ai/settings/keys"));
+                  root.addView(orPage);
+ 
+                  groq = secretField("Groq API key" + configured("groq_key"));
+                  root.addView(groq);
+                  Button groqPage = button("GET / OPEN GROQ KEY");
+                  groqPage.setOnClickListener(v -> open("https://console.groq.com/keys"));
+                  root.addView(groqPage);
+ 
+                  gemini = secretField("Gemini API key" + configured("gemini_key"));
+                  root.addView(gemini);
+                  Button geminiPage = button("GET / OPEN GEMINI KEY");
+                  geminiPage.setOnClickListener(v -> open("https://aistudio.google.com/apikey"));
+                  root.addView(geminiPage);
+ 
+                  Button save = button("SAVE / UPDATE CORE KEYS");
+                  save.setOnClickListener(v -> saveKeys());
+                  root.addView(save);
+ 
+                  Button test = button("TEST THE INTEGRATED CORE");
+                  test.setOnClickListener(v -> testCore());
+                  root.addView(test);
+ 
+                  testResult = text("CORE TEST: not run yet", 14);
+                  root.addView(testResult);
+ 
+                  Button clear = button("CLEAR ALL CORE KEYS");
+                  clear.setOnClickListener(v -> {
+                      SecureStore.clearCoreKeys(this);
+                      toast("Core keys cleared");
+                      refresh();
+                  });
+                  root.addView(clear);
+ 
+                  root.addView(text(
+                          "ROUTING: Fresh/current/web questions prefer Groq Compound when configured. General reasoning prefers OpenRouter's free router. " +
+                          "Gemini 2.5 Flash-Lite is the next fallback. A custom Atlas Core URL remains the final fallback.",
+                          14));
+ 
+                  root.addView(text(
+                          "INTEGRATION: AtlasCore receives only relevant phone context, returns reply + ordered actions + durable memories, filters unsupported actions, " +
+                          "then hands valid actions back to the existing ActionEngine where Android permissions and confirmations still apply.",
+                          14));
+ 
+                  Button back = button("BACK TO ATLAS");
+                  back.setOnClickListener(v -> finish());
+                  root.addView(back);
+ 
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.addView(root);
+                  setContentView(scroll);
+              }
+ 
+              @Override protected void onResume() {
+                  super.onResume();
+                  refresh();
+              }
+ 
+              private void refresh() {
+                  if (status != null) status.setText(AtlasCore.status(this));
+              }
+ 
+              private String configured(String key) {
+                  return SecureStore.has(this, key) ? " - CONFIGURED (leave blank to keep)" : "";
+              }
+ 
+              private EditText secretField(String hint) {
+                  EditText e = new EditText(this);
+                  e.setHint(hint);
+                  e.setSingleLine(true);
+                  e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                  e.setPadding(12, 18, 12, 18);
+                  return e;
+              }
+ 
+              private TextView text(String s, int size) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(size);
+                  t.setPadding(12, 12, 12, 12);
+                  return t;
+              }
+ 
+              private Button button(String s) {
+                  Button b = new Button(this);
+                  b.setText(s);
+                  return b;
+              }
+ 
+              private void saveKeys() {
+                  String o = openRouter.getText().toString().trim();
+                  String g = groq.getText().toString().trim();
+                  String m = gemini.getText().toString().trim();
+                  if (!o.isEmpty()) SecureStore.set(this, "openrouter_key", o);
+                  if (!g.isEmpty()) SecureStore.set(this, "groq_key", g);
+                  if (!m.isEmpty()) SecureStore.set(this, "gemini_key", m);
+                  openRouter.setText("");
+                  groq.setText("");
+                  gemini.setText("");
+                  refresh();
+                  toast("Atlas 1.3 core settings saved");
+              }
+ 
+              private void testCore() {
+                  saveKeys();
+                  if (!AtlasCore.isConfigured(this) && AtlasStore.coreUrl(this).isEmpty()) {
+                      testResult.setText("CORE TEST: NOT CONFIGURED - add one provider key first.");
+                      return;
+                  }
+                  testResult.setText("CORE TEST: connecting...");
+                  new Thread(() -> {
+                      try {
+                          JSONObject r = AtlasCore.ask(
+                                  this,
+                                  "Atlas 1.3 core self-test. Reply briefly that the integrated core is online. Return no phone actions and no memories.",
+                                  UUID.randomUUID().toString());
+                          String provider = r.optString("provider", "core");
+                          String reply = r.optString("reply", "online");
+                          runOnUiThread(() -> {
+                              testResult.setText("CORE TEST: ONLINE via " + provider + " - " + reply);
+                              refresh();
+                          });
+                      } catch (Exception e) {
+                          runOnUiThread(() -> testResult.setText("CORE TEST FAILED: " + e.getMessage()));
+                      }
+                  }).start();
+              }
+ 
+              private void open(String url) {
+                  try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+                  catch (Exception e) { toast("Could not open browser"); }
+              }
+ 
+              private void toast(String s) {
+                  Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+              }
+          }
+          JAVA
+ 
+          echo "Atlas 1.3 integrated core source installed into build tree."
+ 
+      - name: Install Atlas 1.3 life-agent upgrades
+        shell: bash
+        run: |
+          set -euo pipefail
+ 
+          python3 <<'PY13'
+          from pathlib import Path
+          import re
+ 
+          manifest = Path('app/src/main/AndroidManifest.xml')
+          m = manifest.read_text()
+          receiver_anchor = '        <receiver\n            android:name=".AtlasBootReceiver"'
+          additions = '''        <receiver android:name=".AtlasTaskReceiver" android:exported="false" />
+                  <receiver android:name=".AtlasCallActionReceiver" android:exported="false" />
+ 
+          '''
+          if 'android:name=".AtlasTaskReceiver"' not in m:
+              if receiver_anchor not in m:
+                  raise SystemExit('Boot receiver manifest anchor missing')
+              m = m.replace(receiver_anchor, additions + receiver_anchor, 1)
+          manifest.write_text(m)
+ 
+          main = Path('app/src/main/java/com/atlas/personalai/MainActivity.java')
+          t = main.read_text()
+          t = t.replace('ATLAS 1.3 CORE', 'ATLAS 1.3 LIFE AGENT')
+          t = t.replace('CORE SETTINGS / PROVIDERS', 'AI BRAIN / LIFE AGENT SETTINGS')
+          t = t.replace('CORE / BRAIN STATUS', 'LIFE AGENT / BRAIN STATUS')
+          t = t.replace('OPEN CORE / BRAIN', 'OPEN AI BRAIN / AUTOMATION')
+          t = t.replace('Atlas 1.3 integrated core is ready.', 'Atlas 1.3 life-agent core is ready.')
+          t = t.replace('Opening Atlas 1.3 core settings.', 'Opening Atlas 1.3 life-agent settings.')
+ 
+          fields_anchor = '    private JSONArray queuedActions = new JSONArray();\n'
+          extra_fields = '''    private String lastCoreRequest = "";
+              private int coreLoopCount = 0;
+              private boolean continueAfterQueue = false;
+              private final StringBuilder coreFeedback = new StringBuilder();
+          '''
+          if 'private String lastCoreRequest' not in t:
+              if fields_anchor not in t:
+                  raise SystemExit('MainActivity field anchor missing')
+              t = t.replace(fields_anchor, fields_anchor + extra_fields, 1)
+ 
+          pending_old = '''                String result = ActionEngine.execute(this, a);
+                if (queuedActions.length() > 0) runQueuedActions(result); else speakReply(result, conversationMode);
+                return;'''
+          pending_new = '''                String result = ActionEngine.execute(this, a);
+                appendResult(coreFeedback, result);
+                if (queuedActions.length() > 0) runQueuedActions(result);
+                else if (continueAfterQueue) maybeContinueCore(result);
+                else speakReply(result, conversationMode);
+                return;'''
+          if pending_old in t:
+              t = t.replace(pending_old, pending_new, 1)
+ 
+          execute_old = '            appendResult(results, ActionEngine.execute(this, a));\n'
+          execute_new = '''            String actionResult = ActionEngine.execute(this, a);
+            appendResult(results, actionResult);
+            appendResult(coreFeedback, actionResult);
+          '''
+          if execute_old in t:
+              t = t.replace(execute_old, execute_new, 1)
+ 
+          final_old = '        speakReply(results.length() == 0 ? "Done." : results.toString(), conversationMode);\n'
+          final_new = '''        String done = results.length() == 0 ? "Done." : results.toString();
+                  if (continueAfterQueue) maybeContinueCore(done); else speakReply(done, conversationMode);
+          '''
+          if final_old in t:
+              t = t.replace(final_old, final_new, 1)
+ 
+          start = t.find('    private void callCore(')
+          end = t.find('    private String memorySummary()', start)
+          if start < 0 or end < 0:
+              raise SystemExit('MainActivity callCore markers missing')
+          replacement = '''    private void callCore(String ignored, String text) {
+                  lastCoreRequest = text == null ? "" : text;
+                  coreLoopCount = 0;
+                  coreFeedback.setLength(0);
+                  requestCoreDecision(lastCoreRequest, "");
+              }
+ 
+              private void requestCoreDecision(String request, String feedback) {
+                  try {
+            JSONObject out = feedback == null || feedback.trim().isEmpty()
+                    ? AtlasCore.ask(this, request, conversationId)
+                    : AtlasCore.continueAfterActions(this, request, feedback, conversationId);
+            String r = out.optString("reply", "");
+            JSONArray memories = out.optJSONArray("memories");
+            if (memories != null) {
+                for (int i = 0; i < memories.length(); i++) {
+                    String memory = memories.optString(i, "").trim();
+                    if (!memory.isEmpty()) AtlasStore.remember(this, memory);
+                }
+            }
+            JSONArray actions = out.optJSONArray("actions");
+            String provider = out.optString("provider", "core");
+            boolean shouldContinue = out.optBoolean("continue", false);
+            final String shown = r.isEmpty() ? "" : r;
+            runOnUiThread(() -> {
+                status.setText("AGENT: " + provider.toUpperCase(Locale.US));
+                continueAfterQueue = shouldContinue;
+                if (actions != null && actions.length() > 0) {
+                    queuedActions = actions;
+                    runQueuedActions(shown);
+                } else {
+                    continueAfterQueue = false;
+                    speakReply(shown.isEmpty() ? "Done." : shown, conversationMode);
+                }
+            });
+                  } catch (Exception e) {
+            runOnUiThread(() -> {
+                continueAfterQueue = false;
+                status.setText("AGENT ERROR");
+                speakReply("Core error: " + e.getMessage(), conversationMode);
+            });
+                  }
+              }
+ 
+              private void maybeContinueCore(String interim) {
+                  if (!continueAfterQueue) {
+            speakReply(interim == null || interim.trim().isEmpty() ? "Done." : interim, conversationMode);
+            return;
+                  }
+                  continueAfterQueue = false;
+                  if (coreLoopCount >= 4) {
+            speakReply(interim == null || interim.trim().isEmpty() ? "I reached my action-loop limit." : interim, conversationMode);
+            return;
+                  }
+                  coreLoopCount++;
+                  String feedback = coreFeedback.toString();
+                  coreFeedback.setLength(0);
+                  status.setText("AGENT VERIFYING RESULT...");
+                  new Thread(() -> requestCoreDecision(lastCoreRequest, feedback)).start();
+              }
+ 
+          '''
+          t = t[:start] + replacement + t[end:]
+          main.write_text(t)
+ 
+          engine = Path('app/src/main/java/com/atlas/personalai/ActionEngine.java')
+          a = engine.read_text()
+          allow_anchor = '            case "read_sms": case "dial_number":\n'
+          if 'case "list_automations"' not in a:
+              if allow_anchor not in a:
+                  raise SystemExit('ActionEngine allow anchor missing')
+              a = a.replace(allow_anchor, '            case "read_sms": case "dial_number": case "list_automations": case "get_delegated_call_status":\n', 1)
+          ask_anchor = '            case "answer_call": case "end_call": case "ui_click_text": case "ui_type_text": case "ui_screenshot": case "ui_lock_screen":\n'
+          if 'case "schedule_sms"' not in a:
+              if ask_anchor not in a:
+                  raise SystemExit('ActionEngine ask anchor missing')
+              a = a.replace(ask_anchor,
+                  '            case "answer_call": case "end_call": case "ui_click_text": case "ui_type_text": case "ui_screenshot": case "ui_lock_screen":\n'
+                  '            case "schedule_sms": case "schedule_call": case "delegate_call": case "set_contact_rule": case "set_event_rule": case "cancel_automation":\n', 1)
+ 
+          confirm_anchor = '        if ("ui_lock_screen".equals(type)) return "Lock the screen? Say yes to confirm.";\n'
+          if '"schedule_sms".equals(type)' not in a:
+              confirms = '''        if ("schedule_sms".equals(type)) return "Schedule this automatic text to " + a.optString("target", "that contact") + "? Say yes to confirm.";
+                  if ("schedule_call".equals(type)) return "Schedule this call task with " + a.optString("target", "that contact") + "? Say yes to confirm.";
+                  if ("delegate_call".equals(type)) return "Have Atlas call " + a.optString("target", "that contact") + " and handle the conversation for you? Say yes to confirm.";
+                  if ("set_contact_rule".equals(type)) return "Save this automatic call/contact rule for " + a.optString("target", "that contact") + "? Say yes to confirm.";
+                  if ("set_event_rule".equals(type)) return "Save this background automation rule? Say yes to confirm.";
+                  if ("cancel_automation".equals(type)) return "Cancel automation " + a.optString("id", "") + "? Say yes to confirm.";
+          '''
+              if confirm_anchor not in a:
+                  raise SystemExit('ActionEngine confirmation anchor missing')
+              a = a.replace(confirm_anchor, confirm_anchor + confirms, 1)
+ 
+          execute_anchor = '                case "end_call": return PhoneTools.end(c);\n'
+          if 'case "schedule_sms"' not in a[a.find('public static String execute'):]:
+              executes = '''                case "schedule_sms": return AtlasAutomations.scheduleSms(c, a);
+                case "schedule_call": return AtlasAutomations.scheduleCall(c, a);
+                case "delegate_call": return VoiceAgentBridge.delegate(c, a);
+                case "list_automations": return AtlasAutomations.summary(c);
+                case "cancel_automation": return AtlasAutomations.cancel(c, a.optString("id", ""));
+                case "set_contact_rule": return AtlasAutomations.setContactRule(c, a);
+                case "set_event_rule": return AtlasAutomations.setEventRule(c, a);
+                case "get_delegated_call_status": return VoiceAgentBridge.lastStatus(c);
+          '''
+              if execute_anchor not in a:
+                  raise SystemExit('ActionEngine execute anchor missing')
+              a = a.replace(execute_anchor, execute_anchor + executes, 1)
+          engine.write_text(a)
+ 
+          contacts = Path('app/src/main/java/com/atlas/personalai/ContactTools.java')
+          c = contacts.read_text()
+          last4_anchor = '    public static String last4(String s) {\n'
+          if 'findByNumber' not in c:
+              method = '''    public static ContactHit findByNumber(Context c, String number) {
+                  if (c.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null;
+                  String needle = number == null ? "" : number.replaceAll("\\\\D", "");
+                  if (needle.length() > 10) needle = needle.substring(needle.length() - 10);
+                  Cursor cur = null;
+                  try {
+            cur = c.getContentResolver().query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    new String[]{ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER},
+                    null, null, null);
+            while (cur != null && cur.moveToNext()) {
+                String candidate = cur.getString(1);
+                String digits = candidate == null ? "" : candidate.replaceAll("\\\\D", "");
+                if (digits.length() > 10) digits = digits.substring(digits.length() - 10);
+                if (!needle.isEmpty() && needle.equals(digits)) return new ContactHit(cur.getString(0), candidate);
+            }
+                  } catch (Exception ignored) {
+                  } finally { if (cur != null) cur.close(); }
+                  return null;
+              }
+ 
+          '''
+              if last4_anchor not in c:
+                  raise SystemExit('ContactTools last4 anchor missing')
+              c = c.replace(last4_anchor, method + last4_anchor, 1)
+          contacts.write_text(c)
+ 
+          store = Path('app/src/main/java/com/atlas/personalai/AtlasStore.java')
+          st = store.read_text()
+          old_remember = '''    public static void remember(Context c, String text) {
+                  JSONArray a = memories(c);
+                  a.put(text);
+                  while (a.length() > 250) a.remove(0);
+                  p(c).edit().putString("memories", a.toString()).apply();
+              }
+          '''
+          new_remember = '''    public static void remember(Context c, String text) {
+                  if (text == null || text.trim().isEmpty()) return;
+                  String clean = text.trim();
+                  JSONArray src = memories(c);
+                  JSONArray out = new JSONArray();
+                  String key = clean.toLowerCase(java.util.Locale.US);
+                  for (int i = 0; i < src.length(); i++) {
+            String old = src.optString(i, "");
+            if (!old.toLowerCase(java.util.Locale.US).equals(key)) out.put(old);
+                  }
+                  out.put(clean);
+                  while (out.length() > 500) out.remove(0);
+                  p(c).edit().putString("memories", out.toString()).apply();
+              }
+          '''
+          if old_remember in st:
+              st = st.replace(old_remember, new_remember, 1)
+          store.write_text(st)
+          PY13
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasCore.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.io.BufferedReader;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.Arrays;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+ 
+          public final class AtlasCore {
+              private static final String HEALTH_PREF = "atlas_core_health_v13";
+              private static final int MAX_ACTIONS = 12;
+              private static final Set<String> ALLOWED_ACTIONS = new HashSet<>(Arrays.asList(
+                      "open_app", "navigate", "web_search", "get_location", "call_contact", "dial_number",
+                      "send_sms", "read_sms", "create_calendar_event", "media_play", "media_pause",
+                      "media_next", "media_previous", "volume_up", "volume_down", "flashlight_on",
+                      "flashlight_off", "open_camera", "clipboard_copy", "clipboard_read", "answer_call",
+                      "end_call", "ui_back", "ui_home", "ui_recents", "ui_notifications",
+                      "ui_quick_settings", "ui_scroll_down", "ui_scroll_up", "ui_swipe_up",
+                      "ui_swipe_down", "ui_swipe_left", "ui_swipe_right", "ui_click_text",
+                      "ui_type_text", "ui_screenshot", "ui_lock_screen", "schedule_sms", "schedule_call",
+                      "delegate_call", "list_automations", "cancel_automation", "set_contact_rule",
+                      "set_event_rule", "get_delegated_call_status"
+              ));
+ 
+              private AtlasCore() {}
+ 
+              public static boolean isConfigured(Context c) {
+                  return SecureStore.has(c, "gemini_key") || SecureStore.has(c, "openrouter_key") || SecureStore.has(c, "groq_key");
+              }
+ 
+              public static String shortStatus(Context c) {
+                  if (SecureStore.has(c, "gemini_key")) return "GEMINI 3.8 AGENT";
+                  if (SecureStore.has(c, "openrouter_key")) return "OPENROUTER AGENT";
+                  if (SecureStore.has(c, "groq_key")) return "GROQ COMPOUND";
+                  if (!AtlasStore.coreUrl(c).isEmpty()) return "CUSTOM CORE";
+                  return "NO BRAIN";
+              }
+ 
+              public static String status(Context c) {
+                  List<String> ready = new ArrayList<>();
+                  if (SecureStore.has(c, "gemini_key")) ready.add("Gemini 3.8 Flash primary agent");
+                  if (SecureStore.has(c, "groq_key")) ready.add("Groq Compound live-web specialist");
+                  if (SecureStore.has(c, "openrouter_key")) ready.add("OpenRouter free fallback");
+                  if (!AtlasStore.coreUrl(c).isEmpty()) ready.add("custom core fallback");
+                  if (SecureStore.has(c, "relay_url")) ready.add("delegated voice-call relay");
+                  if (ready.isEmpty()) return "Atlas 1.3 agent code is installed. Add at least one AI key.";
+                  SharedPreferences hp = c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE);
+                  String last = hp.getString("last_provider", "");
+                  return "Life agent ready: " + String.join(" | ", ready) + (last.isEmpty() ? "" : ". Last brain: " + last);
+              }
+ 
+              public static JSONObject ask(Context c, String text, String conversationId) throws Exception {
+                  return decide(c, text, "", conversationId);
+              }
+ 
+              public static JSONObject continueAfterActions(Context c, String originalRequest, String feedback, String conversationId) throws Exception {
+                  return decide(c, originalRequest, feedback == null ? "" : feedback, conversationId);
+              }
+ 
+              private static JSONObject decide(Context c, String request, String feedback, String conversationId) throws Exception {
+                  request = request == null ? "" : request.trim();
+                  if (request.isEmpty()) return empty("What do you want me to handle?");
+                  List<String> errors = new ArrayList<>();
+                  String research = "";
+                  if (needsFreshWeb(request) && SecureStore.has(c, "groq_key")) {
+                      try { research = callGroqResearch(c, request); }
+                      catch (Exception e) { errors.add("Groq research: " + shortError(e)); }
+                  }
+                  if (SecureStore.has(c, "gemini_key")) {
+                      try { return finish(c, parse(callGemini(c, request, feedback, research, conversationId), "gemini-3.8-flash")); }
+                      catch (Exception e) { errors.add("Gemini: " + shortError(e)); recordFailure(c, "gemini-3.8-flash", e); }
+                  }
+                  if (SecureStore.has(c, "openrouter_key")) {
+                      try { return finish(c, parse(callOpenRouter(c, request, feedback, research, conversationId), "openrouter-free")); }
+                      catch (Exception e) { errors.add("OpenRouter: " + shortError(e)); recordFailure(c, "openrouter-free", e); }
+                  }
+                  if (SecureStore.has(c, "groq_key")) {
+                      try { return finish(c, parse(callGroqAgent(c, request, feedback, conversationId), "groq-compound")); }
+                      catch (Exception e) { errors.add("Groq: " + shortError(e)); recordFailure(c, "groq-compound", e); }
+                  }
+                  if (!AtlasStore.coreUrl(c).isEmpty()) {
+                      try { return finish(c, callCustomCore(c, request, feedback, conversationId)); }
+                      catch (Exception e) { errors.add("Custom: " + shortError(e)); recordFailure(c, "custom-core", e); }
+                  }
+                  if (errors.isEmpty()) throw new Exception("No AI brain configured. Open AI Brain / Life Agent Settings and add a key.");
+                  throw new Exception("All configured brains failed. " + String.join(" | ", errors));
+              }
+ 
+              private static String callGemini(Context c, String request, String feedback, String research, String conversationId) throws Exception {
+                  String endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+                  JSONObject body = new JSONObject();
+                  body.put("system_instruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", systemPrompt()))));
+                  JSONObject user = new JSONObject();
+                  user.put("role", "user");
+                  String payload = "PHONE_AND_LIFE_CONTEXT:\n" + context(c, conversationId, request).toString() +
+                          "\n\nUSER_REQUEST:\n" + request;
+                  if (!research.isEmpty()) payload += "\n\nLIVE_RESEARCH_FROM_SPECIALIST:\n" + research;
+                  if (!feedback.isEmpty()) payload += "\n\nREAL_ACTION_RESULTS_FROM_PHONE:\n" + feedback +
+                          "\nContinue the task from these real results. Do not repeat completed actions.";
+                  user.put("parts", new JSONArray().put(new JSONObject().put("text", payload)));
+                  body.put("contents", new JSONArray().put(user));
+                  JSONObject config = new JSONObject();
+                  config.put("temperature", 0.15);
+                  config.put("maxOutputTokens", 2600);
+                  config.put("responseMimeType", "application/json");
+                  config.put("thinkingConfig", new JSONObject().put("thinkingLevel", "medium"));
+                  body.put("generationConfig", config);
+                  HttpURLConnection h = connection(endpoint);
+                  h.setRequestProperty("x-goog-api-key", SecureStore.get(c, "gemini_key"));
+                  String raw = post(h, body.toString());
+                  JSONObject o = new JSONObject(raw);
+                  JSONArray parts = o.getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts");
+                  StringBuilder text = new StringBuilder();
+                  for (int i = 0; i < parts.length(); i++) text.append(parts.getJSONObject(i).optString("text", ""));
+                  return text.toString();
+              }
+ 
+              private static String callGroqResearch(Context c, String request) throws Exception {
+                  JSONObject body = new JSONObject();
+                  body.put("model", "groq/compound");
+                  body.put("messages", new JSONArray().put(new JSONObject().put("role", "user").put("content",
+                          "Research this request using current web information when useful. Return concise factual notes for another AI agent, not instructions to the user: " + request)));
+                  HttpURLConnection h = connection("https://api.groq.com/openai/v1/chat/completions");
+                  h.setRequestProperty("Authorization", "Bearer " + SecureStore.get(c, "groq_key"));
+                  JSONObject o = new JSONObject(post(h, body.toString()));
+                  return o.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "");
+              }
+ 
+              private static String callGroqAgent(Context c, String request, String feedback, String conversationId) throws Exception {
+                  JSONObject body = openAiBody(c, request, feedback, "", conversationId, "groq/compound");
+                  HttpURLConnection h = connection("https://api.groq.com/openai/v1/chat/completions");
+                  h.setRequestProperty("Authorization", "Bearer " + SecureStore.get(c, "groq_key"));
+                  JSONObject o = new JSONObject(post(h, body.toString()));
+                  return o.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "");
+              }
+ 
+              private static String callOpenRouter(Context c, String request, String feedback, String research, String conversationId) throws Exception {
+                  JSONObject body = openAiBody(c, request, feedback, research, conversationId, "openrouter/free");
+                  body.put("response_format", new JSONObject().put("type", "json_object"));
+                  HttpURLConnection h = connection("https://openrouter.ai/api/v1/chat/completions");
+                  h.setRequestProperty("Authorization", "Bearer " + SecureStore.get(c, "openrouter_key"));
+                  h.setRequestProperty("HTTP-Referer", "https://github.com/jerikoreyes94-max/Atlas-2");
+                  h.setRequestProperty("X-Title", "Atlas Life Agent 1.3");
+                  JSONObject o = new JSONObject(post(h, body.toString()));
+                  return o.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "");
+              }
+ 
+              private static JSONObject openAiBody(Context c, String request, String feedback, String research, String conversationId, String model) throws Exception {
+                  JSONObject body = new JSONObject();
+                  body.put("model", model);
+                  body.put("temperature", 0.15);
+                  body.put("max_tokens", 2400);
+                  JSONArray messages = new JSONArray();
+                  messages.put(new JSONObject().put("role", "system").put("content", systemPrompt()));
+                  String payload = "PHONE_AND_LIFE_CONTEXT:\n" + context(c, conversationId, request).toString() + "\n\nUSER_REQUEST:\n" + request;
+                  if (!research.isEmpty()) payload += "\n\nLIVE_RESEARCH_FROM_SPECIALIST:\n" + research;
+                  if (!feedback.isEmpty()) payload += "\n\nREAL_ACTION_RESULTS_FROM_PHONE:\n" + feedback + "\nContinue from the results without repeating completed actions.";
+                  messages.put(new JSONObject().put("role", "user").put("content", payload));
+                  body.put("messages", messages);
+                  return body;
+              }
+ 
+              private static JSONObject callCustomCore(Context c, String request, String feedback, String conversationId) throws Exception {
+                  String base = AtlasStore.coreUrl(c);
+                  String endpoint = base.endsWith("/") ? base + "api/chat" : base + "/api/chat";
+                  JSONObject body = new JSONObject();
+                  body.put("text", request);
+                  body.put("conversationId", conversationId);
+                  body.put("context", context(c, conversationId, request));
+                  body.put("actionResults", feedback);
+                  HttpURLConnection h = connection(endpoint);
+                  JSONObject out = new JSONObject(post(h, body.toString()));
+                  out.put("provider", "custom-core");
+                  return out;
+              }
+ 
+              private static JSONObject context(Context c, String conversationId, String request) {
+                  JSONObject x = new JSONObject();
+                  try {
+                      String q = request == null ? "" : request.toLowerCase(Locale.US);
+                      boolean messages = containsAny(q, "text", "sms", "message", "wife", "husband", "call", "contact");
+                      boolean notifs = containsAny(q, "notification", "missed", "what did i miss", "work", "email", "teams");
+                      boolean calendar = containsAny(q, "calendar", "schedule", "appointment", "meeting", "event", "tomorrow", "today", "week");
+                      boolean location = containsAny(q, "where am i", "near me", "nearby", "navigate", "directions", "weather", "location", "home", "work");
+                      x.put("conversationId", conversationId);
+                      x.put("timeMillis", System.currentTimeMillis());
+                      x.put("timezone", java.util.TimeZone.getDefault().getID());
+                      JSONObject device = DeviceContext.snapshot(c);
+                      if (!location) device.remove("location");
+                      x.put("device", device);
+                      x.put("capabilities", CapabilityManager.snapshot(c));
+                      x.put("memories", tail(AtlasStore.memories(c), 80));
+                      x.put("recentConversation", tail(AtlasStore.conversation(c), 30));
+                      x.put("automations", AtlasAutomations.snapshot(c));
+                      x.put("contactRules", AtlasAutomations.rulesSnapshot(c));
+                      x.put("delegatedCallStatus", VoiceAgentBridge.lastStatus(c));
+                      if (notifs) x.put("recentNotifications", tail(AtlasStore.notifications(c), 35));
+                      if (calendar) x.put("upcomingCalendar", CalendarTools.upcoming(c));
+                      if (messages) x.put("recentSms", SmsTools.recent(c));
+                  } catch (Exception ignored) {}
+                  return x;
+              }
+ 
+              private static String systemPrompt() {
+                  return "You are Atlas 1.3, a persistent personal Android life agent, not a chatbot. Your job is to understand intent, plan, act through phone tools, remember durable facts, create future automations when requested, and verify real action results before claiming completion. " +
+                          "Return ONLY one JSON object with schema {reply:string, actions:array, memories:array, continue:boolean}. Use continue=true only when the real results of the returned actions are needed before you can finish or choose the next step. " +
+                          "The Android app enforces permissions and user confirmation for consequential actions, so do not waste the reply asking for confirmation when you already have enough details; request the action and let the local policy ask. Never invent device state or action success. " +
+                          "You may handle multi-step tasks and life routines. Supported actions: " +
+                          "open_app{app}; navigate{query}; web_search{query}; get_location{}; call_contact{target}; dial_number{number}; send_sms{target,message}; read_sms{}; " +
+                          "create_calendar_event{title,startMillis,endMillis,location}; media_play{}; media_pause{}; media_next{}; media_previous{}; volume_up{}; volume_down{}; flashlight_on{}; flashlight_off{}; open_camera{}; clipboard_copy{text}; clipboard_read{}; " +
+                          "answer_call{}; end_call{}; ui_back{}; ui_home{}; ui_recents{}; ui_notifications{}; ui_quick_settings{}; ui_scroll_down{}; ui_scroll_up{}; ui_swipe_up{}; ui_swipe_down{}; ui_swipe_left{}; ui_swipe_right{}; ui_click_text{target}; ui_type_text{text}; ui_screenshot{}; ui_lock_screen{}; " +
+                          "schedule_sms{target,message,whenMillis,repeat}; schedule_call{target,objective,whenMillis,mode,repeat}; delegate_call{target,objective,intro}; list_automations{}; cancel_automation{id}; set_contact_rule{target,incomingPolicy,missedCallMessage}; set_event_rule{event,contains,target,message,objective,action}; get_delegated_call_status{}. " +
+                          "repeat may be none,daily,weekdays,weekly. incomingPolicy may be ask,allow,silence,reject. set_event_rule event currently supports notification_contains and action supports send_sms or delegate_call. " +
+                          "delegate_call means Atlas's remote voice agent calls the person and converses on the user's behalf about the stated objective; it must identify itself as the user's AI assistant and never impersonate the user. " +
+                          "For scheduled or recurring behavior, create the automation rather than merely promising to remember. For relative times, calculate whenMillis from the supplied timeMillis/timezone. If a contact or critical detail is genuinely missing, ask briefly instead of guessing. " +
+                          "Use memories only for durable facts/preferences/relationships/routines that will matter later. Keep spoken replies concise unless the user asks for detail.";
+              }
+ 
+              private static boolean needsFreshWeb(String text) {
+                  String s = text.toLowerCase(Locale.US);
+                  String[] terms = {"today", "latest", "current", "news", "weather", "score", "price", "open now", "right now", "traffic", "stock", "market", "look online", "search the web", "find online"};
+                  for (String term : terms) if (s.contains(term)) return true;
+                  return false;
+              }
+ 
+              private static boolean containsAny(String s, String... terms) {
+                  for (String term : terms) if (s.contains(term)) return true;
+                  return false;
+              }
+ 
+              private static JSONArray tail(JSONArray a, int max) {
+                  JSONArray out = new JSONArray();
+                  if (a == null) return out;
+                  for (int i = Math.max(0, a.length() - max); i < a.length(); i++) out.put(a.opt(i));
+                  return out;
+              }
+ 
+              private static JSONObject parse(String raw, String provider) throws Exception {
+                  String s = raw == null ? "" : raw.trim();
+                  if (s.startsWith("```")) {
+                      int nl = s.indexOf('\n');
+                      if (nl >= 0) s = s.substring(nl + 1);
+                      if (s.endsWith("```")) s = s.substring(0, s.length() - 3).trim();
+                  }
+                  int a = s.indexOf('{');
+                  int b = s.lastIndexOf('}');
+                  JSONObject out;
+                  if (a >= 0 && b > a) {
+                      try { out = new JSONObject(s.substring(a, b + 1)); }
+                      catch (Exception e) { out = new JSONObject().put("reply", s); }
+                  } else out = new JSONObject().put("reply", s);
+                  if (!out.has("reply")) out.put("reply", "");
+                  if (!out.has("actions")) out.put("actions", new JSONArray());
+                  if (!out.has("memories")) out.put("memories", new JSONArray());
+                  if (!out.has("continue")) out.put("continue", false);
+                  out.put("provider", provider);
+                  return out;
+              }
+ 
+              private static JSONObject finish(Context c, JSONObject out) throws Exception {
+                  JSONArray source = out.optJSONArray("actions");
+                  JSONArray clean = new JSONArray();
+                  if (source != null) {
+                      for (int i = 0; i < source.length() && clean.length() < MAX_ACTIONS; i++) {
+                          JSONObject action = source.optJSONObject(i);
+                          if (action != null && ALLOWED_ACTIONS.contains(action.optString("type", ""))) clean.put(action);
+                      }
+                  }
+                  out.put("actions", clean);
+                  if (out.optJSONArray("memories") == null) out.put("memories", new JSONArray());
+                  recordSuccess(c, out.optString("provider", "core"));
+                  return out;
+              }
+ 
+              private static JSONObject empty(String reply) throws Exception {
+                  return new JSONObject().put("reply", reply).put("actions", new JSONArray()).put("memories", new JSONArray()).put("continue", false).put("provider", "local");
+              }
+ 
+              private static HttpURLConnection connection(String endpoint) throws Exception {
+                  HttpURLConnection h = (HttpURLConnection) new URL(endpoint).openConnection();
+                  h.setConnectTimeout(15000);
+                  h.setReadTimeout(70000);
+                  h.setRequestMethod("POST");
+                  h.setDoOutput(true);
+                  h.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                  h.setRequestProperty("Accept", "application/json");
+                  return h;
+              }
+ 
+              private static String post(HttpURLConnection h, String json) throws Exception {
+                  try (OutputStream os = h.getOutputStream()) { os.write(json.getBytes(StandardCharsets.UTF_8)); }
+                  int code = h.getResponseCode();
+                  InputStream in = code >= 200 && code < 300 ? h.getInputStream() : h.getErrorStream();
+                  String body = readAll(in);
+                  h.disconnect();
+                  if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " " + trim(body, 300));
+                  return body;
+              }
+ 
+              private static String readAll(InputStream in) throws Exception {
+                  if (in == null) return "";
+                  BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+                  StringBuilder sb = new StringBuilder();
+                  String line;
+                  while ((line = br.readLine()) != null) sb.append(line);
+                  return sb.toString();
+              }
+ 
+              private static String trim(String s, int max) {
+                  if (s == null) return "";
+                  s = s.replace('\n', ' ').replace('\r', ' ').trim();
+                  return s.length() <= max ? s : s.substring(0, max);
+              }
+ 
+              private static String shortError(Exception e) { return trim(e == null ? "unknown" : e.getMessage(), 160); }
+ 
+              private static void recordSuccess(Context c, String provider) {
+                  c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE).edit().putString("last_provider", provider).putLong("last_success", System.currentTimeMillis()).remove("last_error").apply();
+              }
+ 
+              private static void recordFailure(Context c, String provider, Exception e) {
+                  c.getSharedPreferences(HEALTH_PREF, Context.MODE_PRIVATE).edit().putString("last_error_provider", provider).putString("last_error", shortError(e)).putLong("last_error_time", System.currentTimeMillis()).apply();
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/CoreSettingsActivity.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Typeface;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import org.json.JSONObject;
+          import java.util.UUID;
+ 
+          public class CoreSettingsActivity extends Activity {
+              private EditText gemini, groq, openRouter, relayUrl, relayToken;
+              private TextView status, testResult;
+ 
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(28, 28, 28, 28);
+                  TextView title = text("ATLAS 1.3 - LIFE AGENT BRAIN", 27);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  title.setGravity(Gravity.CENTER_HORIZONTAL);
+                  root.addView(title);
+                  root.addView(text("PRIMARY BRAIN: Gemini 3.8 Flash. LIVE WEB SPECIALIST: Groq Compound. FALLBACK: OpenRouter free router. Delegated AI phone calls use the optional Atlas Voice Relay.", 15));
+                  status = text(AtlasCore.status(this), 15);
+                  status.setTypeface(Typeface.DEFAULT_BOLD);
+                  root.addView(status);
+ 
+                  gemini = secretField("Gemini API key" + configured("gemini_key")); root.addView(gemini);
+                  Button gm = button("GET / OPEN GEMINI KEY"); gm.setOnClickListener(v -> open("https://aistudio.google.com/apikey")); root.addView(gm);
+                  groq = secretField("Groq API key" + configured("groq_key")); root.addView(groq);
+                  Button g = button("GET / OPEN GROQ KEY"); g.setOnClickListener(v -> open("https://console.groq.com/keys")); root.addView(g);
+                  openRouter = secretField("OpenRouter API key" + configured("openrouter_key")); root.addView(openRouter);
+                  Button or = button("GET / OPEN OPENROUTER KEY"); or.setOnClickListener(v -> open("https://openrouter.ai/settings/keys")); root.addView(or);
+ 
+                  relayUrl = field("Atlas Voice Relay URL" + configured("relay_url")); root.addView(relayUrl);
+                  relayToken = secretField("Atlas Voice Relay token" + configured("relay_token")); root.addView(relayToken);
+ 
+                  Button save = button("SAVE LIFE AGENT SETTINGS"); save.setOnClickListener(v -> save()); root.addView(save);
+                  Button test = button("TEST AI BRAIN"); test.setOnClickListener(v -> testCore()); root.addView(test);
+                  testResult = text("TEST: not run yet", 14); root.addView(testResult);
+                  Button tasks = button("SHOW AUTOMATIONS"); tasks.setOnClickListener(v -> testResult.setText(AtlasAutomations.summary(this))); root.addView(tasks);
+                  Button callStatus = button("LAST DELEGATED CALL STATUS"); callStatus.setOnClickListener(v -> testResult.setText(VoiceAgentBridge.lastStatus(this))); root.addView(callStatus);
+                  Button clear = button("CLEAR ALL AI / RELAY CREDENTIALS"); clear.setOnClickListener(v -> { SecureStore.clearCoreKeys(this); refresh(); toast("Credentials cleared"); }); root.addView(clear);
+                  Button back = button("BACK TO ATLAS"); back.setOnClickListener(v -> finish()); root.addView(back);
+                  ScrollView scroll = new ScrollView(this); scroll.addView(root); setContentView(scroll);
+              }
+ 
+              @Override protected void onResume() { super.onResume(); refresh(); }
+ 
+              private void save() {
+                  saveOne(gemini, "gemini_key"); saveOne(groq, "groq_key"); saveOne(openRouter, "openrouter_key"); saveOne(relayUrl, "relay_url"); saveOne(relayToken, "relay_token");
+                  refresh(); toast("Atlas 1.3 settings saved");
+              }
+ 
+              private void saveOne(EditText e, String key) {
+                  String s = e.getText().toString().trim();
+                  if (!s.isEmpty()) SecureStore.set(this, key, s);
+                  e.setText("");
+              }
+ 
+              private void testCore() {
+                  save();
+                  if (!AtlasCore.isConfigured(this) && AtlasStore.coreUrl(this).isEmpty()) { testResult.setText("TEST: add at least one AI key first."); return; }
+                  testResult.setText("TEST: thinking...");
+                  new Thread(() -> {
+                      try {
+                          JSONObject r = AtlasCore.ask(this, "Atlas 1.3 self-test. Reply that the life-agent brain is online. Return no actions and no memories.", UUID.randomUUID().toString());
+                          runOnUiThread(() -> { testResult.setText("ONLINE via " + r.optString("provider", "core") + " - " + r.optString("reply", "online")); refresh(); });
+                      } catch (Exception e) { runOnUiThread(() -> testResult.setText("TEST FAILED: " + e.getMessage())); }
+                  }).start();
+              }
+ 
+              private void refresh() { if (status != null) status.setText(AtlasCore.status(this)); }
+              private String configured(String key) { return SecureStore.has(this, key) ? " - CONFIGURED (leave blank to keep)" : ""; }
+              private EditText secretField(String hint) { EditText e = field(hint); e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); return e; }
+              private EditText field(String hint) { EditText e = new EditText(this); e.setHint(hint); e.setSingleLine(true); e.setPadding(12, 18, 12, 18); return e; }
+              private TextView text(String s, int size) { TextView t = new TextView(this); t.setText(s); t.setTextSize(size); t.setPadding(12, 12, 12, 12); return t; }
+              private Button button(String s) { Button b = new Button(this); b.setText(s); return b; }
+              private void open(String url) { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception e) { toast("Could not open browser"); } }
+              private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasAutomations.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.AlarmManager;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.net.Uri;
+          import android.os.Build;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.util.Locale;
+          import java.util.UUID;
+ 
+          public final class AtlasAutomations {
+              private static final String PREF = "atlas_automations_v13";
+              private static final String CH = "atlas_automation_events";
+              private AtlasAutomations() {}
+ 
+              private static SharedPreferences p(Context c) { return c.getSharedPreferences(PREF, Context.MODE_PRIVATE); }
+              private static JSONArray array(Context c, String key) { try { return new JSONArray(p(c).getString(key, "[]")); } catch (Exception e) { return new JSONArray(); } }
+              private static void put(Context c, String key, JSONArray value) { p(c).edit().putString(key, value.toString()).apply(); }
+ 
+              public static JSONArray snapshot(Context c) { return array(c, "tasks"); }
+              public static JSONArray rulesSnapshot(Context c) { JSONArray out = new JSONArray(); JSONArray a = array(c, "contact_rules"); JSONArray b = array(c, "event_rules"); for (int i=0;i<a.length();i++) out.put(a.opt(i)); for (int i=0;i<b.length();i++) out.put(b.opt(i)); return out; }
+ 
+              public static String scheduleSms(Context c, JSONObject a) {
+                  try {
+                      String target = a.optString("target", "").trim();
+                      String message = a.optString("message", a.optString("text", "")).trim();
+                      long when = a.optLong("whenMillis", 0L);
+                      if (target.isEmpty() || message.isEmpty() || when <= 0) return "That scheduled text needs a contact, message, and time.";
+                      ContactTools.ContactHit hit = ContactTools.find(c, target);
+                      String number = hit == null ? target : hit.number;
+                      String name = hit == null ? target : hit.name;
+                      JSONObject task = task("sms", name, number, when, a.optString("repeat", "none"));
+                      task.put("message", message);
+                      saveTask(c, task); schedule(c, task);
+                      return "Scheduled the text to " + name + ".";
+                  } catch (Exception e) { return "Schedule error: " + e.getMessage(); }
+              }
+ 
+              public static String scheduleCall(Context c, JSONObject a) {
+                  try {
+                      String target = a.optString("target", "").trim();
+                      long when = a.optLong("whenMillis", 0L);
+                      String objective = a.optString("objective", "").trim();
+                      String mode = a.optString("mode", objective.isEmpty() ? "carrier" : "ai").toLowerCase(Locale.US);
+                      if (target.isEmpty() || when <= 0) return "That scheduled call needs a contact and time.";
+                      ContactTools.ContactHit hit = ContactTools.find(c, target);
+                      String number = hit == null ? target : hit.number;
+                      String name = hit == null ? target : hit.name;
+                      JSONObject task = task("ai".equals(mode) ? "ai_call" : "carrier_call", name, number, when, a.optString("repeat", "none"));
+                      task.put("objective", objective);
+                      saveTask(c, task); schedule(c, task);
+                      return "Scheduled the " + ("ai".equals(mode) ? "delegated AI" : "phone") + " call with " + name + ".";
+                  } catch (Exception e) { return "Schedule error: " + e.getMessage(); }
+              }
+ 
+              private static JSONObject task(String type, String target, String number, long when, String repeat) throws Exception {
+                  return new JSONObject().put("id", UUID.randomUUID().toString()).put("type", type).put("target", target).put("number", number)
+                          .put("whenMillis", when).put("repeat", normalizeRepeat(repeat)).put("active", true).put("createdMillis", System.currentTimeMillis());
+              }
+ 
+              private static void saveTask(Context c, JSONObject task) { JSONArray a = array(c, "tasks"); a.put(task); trim(a, 300); put(c, "tasks", a); }
+ 
+              private static void schedule(Context c, JSONObject task) {
+                  long when = Math.max(System.currentTimeMillis() + 1000L, task.optLong("whenMillis", System.currentTimeMillis() + 1000L));
+                  Intent i = new Intent(c, AtlasTaskReceiver.class).putExtra("task_id", task.optString("id", ""));
+                  PendingIntent pi = PendingIntent.getBroadcast(c, task.optString("id", "").hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                  AlarmManager am = (AlarmManager)c.getSystemService(Context.ALARM_SERVICE);
+                  if (am == null) return;
+                  if (Build.VERSION.SDK_INT >= 31 && am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when, pi);
+                  else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when, pi);
+              }
+ 
+              public static void rescheduleAll(Context c) {
+                  JSONArray a = array(c, "tasks");
+                  for (int i=0;i<a.length();i++) { JSONObject t = a.optJSONObject(i); if (t != null && t.optBoolean("active", false)) schedule(c, t); }
+              }
+ 
+              public static String cancel(Context c, String id) {
+                  if (id == null || id.trim().isEmpty()) return "Tell me which automation ID to cancel.";
+                  JSONArray a = array(c, "tasks"); boolean found = false;
+                  for (int i=0;i<a.length();i++) { JSONObject t=a.optJSONObject(i); if (t!=null && id.equals(t.optString("id"))) { try { t.put("active", false); } catch(Exception ignored){} found=true; } }
+                  put(c, "tasks", a);
+                  Intent i = new Intent(c, AtlasTaskReceiver.class).putExtra("task_id", id);
+                  PendingIntent pi = PendingIntent.getBroadcast(c, id.hashCode(), i, PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+                  AlarmManager am = (AlarmManager)c.getSystemService(Context.ALARM_SERVICE); if (am != null && pi != null) am.cancel(pi);
+                  return found ? "Automation cancelled." : "I couldn't find that automation.";
+              }
+ 
+              public static String summary(Context c) {
+                  JSONArray a = array(c, "tasks"); StringBuilder s = new StringBuilder(); int shown=0;
+                  for (int i=0;i<a.length();i++) { JSONObject t=a.optJSONObject(i); if (t==null || !t.optBoolean("active",false)) continue; if (shown++>0) s.append(" | "); s.append(t.optString("id").substring(0, Math.min(8,t.optString("id").length()))).append(": ").append(t.optString("type")).append(" -> ").append(t.optString("target")).append(" @ ").append(new java.util.Date(t.optLong("whenMillis"))); if(shown>=12) break; }
+                  return shown==0 ? "No active automations." : s.toString();
+              }
+ 
+              public static String setContactRule(Context c, JSONObject a) {
+                  try {
+                      String target = a.optString("target", "").trim(); if (target.isEmpty()) return "That contact rule needs a contact.";
+                      ContactTools.ContactHit hit = ContactTools.find(c, target); String number = hit == null ? target : hit.number; String name = hit == null ? target : hit.name;
+                      JSONObject rule = new JSONObject().put("id", UUID.randomUUID().toString()).put("target", name).put("number", digits(number))
+                              .put("incomingPolicy", normalizeIncoming(a.optString("incomingPolicy", "ask"))).put("missedCallMessage", a.optString("missedCallMessage", ""));
+                      JSONArray src=array(c,"contact_rules"), out=new JSONArray(); String key=digits(number);
+                      for(int i=0;i<src.length();i++){ JSONObject old=src.optJSONObject(i); if(old!=null && !key.equals(old.optString("number"))) out.put(old); }
+                      out.put(rule); put(c,"contact_rules",out); return "Saved the contact rule for " + name + ".";
+                  } catch(Exception e){ return "Rule error: " + e.getMessage(); }
+              }
+ 
+              public static JSONObject contactRule(Context c, String number) {
+                  String key=digits(number); JSONArray a=array(c,"contact_rules");
+                  for(int i=a.length()-1;i>=0;i--){ JSONObject r=a.optJSONObject(i); if(r!=null && key.equals(r.optString("number"))) return r; }
+                  return null;
+              }
+ 
+              public static String setEventRule(Context c, JSONObject a) {
+                  try {
+                      String event=a.optString("event","").trim(); String contains=a.optString("contains","").trim(); String action=a.optString("action","send_sms").trim();
+                      if(!"notification_contains".equals(event) || contains.isEmpty()) return "1.3 event rules currently require event notification_contains and a contains phrase.";
+                      if(!"send_sms".equals(action) && !"delegate_call".equals(action)) return "That background rule action is unsupported.";
+                      JSONObject r=new JSONObject().put("id",UUID.randomUUID().toString()).put("event",event).put("contains",contains).put("action",action)
+                              .put("target",a.optString("target","")).put("message",a.optString("message","")).put("objective",a.optString("objective","")).put("enabled",true);
+                      JSONArray rules=array(c,"event_rules"); rules.put(r); trim(rules,100); put(c,"event_rules",rules); return "Background automation rule saved.";
+                  } catch(Exception e){ return "Rule error: " + e.getMessage(); }
+              }
+ 
+              public static void onNotification(Context c, String pkg, String title, String text) {
+                  String hay=((pkg==null?"":pkg)+" "+(title==null?"":title)+" "+(text==null?"":text)).toLowerCase(Locale.US);
+                  if(hay.contains("missed call")) {
+                      JSONArray contactRules=array(c,"contact_rules");
+                      for(int i=0;i<contactRules.length();i++) {
+                          JSONObject cr=contactRules.optJSONObject(i); if(cr==null) continue;
+                          String contactName=cr.optString("target","").toLowerCase(Locale.US);
+                          String auto=cr.optString("missedCallMessage","").trim();
+                          if(!auto.isEmpty() && !contactName.isEmpty() && hay.contains(contactName)) {
+                              String throttle="missed_"+cr.optString("id",""); long last=p(c).getLong(throttle,0L);
+                              if(System.currentTimeMillis()-last>300000L) { p(c).edit().putLong(throttle,System.currentTimeMillis()).apply(); SmsTools.send(c,cr.optString("number",""),auto); }
+                          }
+                      }
+                  }
+                  JSONArray rules=array(c,"event_rules");
+                  for(int i=0;i<rules.length();i++){
+                      JSONObject r=rules.optJSONObject(i); if(r==null||!r.optBoolean("enabled",true)) continue;
+                      String needle=r.optString("contains","").toLowerCase(Locale.US); if(needle.isEmpty()||!hay.contains(needle)) continue;
+                      long last=p(c).getLong("rule_last_"+r.optString("id"),0L); if(System.currentTimeMillis()-last<300000L) continue;
+                      p(c).edit().putLong("rule_last_"+r.optString("id"),System.currentTimeMillis()).apply();
+                      String target=r.optString("target",""); ContactTools.ContactHit hit=ContactTools.find(c,target); String number=hit==null?target:hit.number;
+                      if("send_sms".equals(r.optString("action"))) SmsTools.send(c,number,r.optString("message",""));
+                      else VoiceAgentBridge.delegateResolved(c,number,hit==null?target:hit.name,r.optString("objective",""),r.optString("id",""));
+                  }
+              }
+ 
+              public static void executeTask(Context c, String id) {
+                  JSONArray a=array(c,"tasks"); JSONObject task=null;
+                  for(int i=0;i<a.length();i++){ JSONObject t=a.optJSONObject(i); if(t!=null&&id.equals(t.optString("id"))&&t.optBoolean("active",false)){task=t;break;} }
+                  if(task==null) return;
+                  String result;
+                  String type=task.optString("type","");
+                  if("sms".equals(type)) result=SmsTools.send(c,task.optString("number",""),task.optString("message",""));
+                  else if("ai_call".equals(type)) result=VoiceAgentBridge.delegateResolved(c,task.optString("number",""),task.optString("target",""),task.optString("objective",""),task.optString("id",""));
+                  else { showCarrierCall(c,task); result="Scheduled carrier call is ready."; }
+                  AtlasStore.addNotification(c,System.currentTimeMillis()+" | Atlas automation | "+task.optString("type")+" | "+result);
+                  String repeat=task.optString("repeat","none"); long next=nextTime(task.optLong("whenMillis"),repeat);
+                  try { if(next>0){ task.put("whenMillis",next); schedule(c,task); } else task.put("active",false); } catch(Exception ignored){}
+                  put(c,"tasks",a);
+              }
+ 
+              private static void showCarrierCall(Context c, JSONObject task) {
+                  NotificationManager nm=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
+                  if(Build.VERSION.SDK_INT>=26) nm.createNotificationChannel(new NotificationChannel(CH,"Atlas Automations",NotificationManager.IMPORTANCE_HIGH));
+                  Intent dial=new Intent(Intent.ACTION_DIAL, Uri.parse("tel:"+Uri.encode(task.optString("number","")))); dial.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  PendingIntent pi=PendingIntent.getActivity(c,task.optString("id","").hashCode(),dial,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+                  android.app.Notification n=new android.app.Notification.Builder(c,CH).setSmallIcon(R.drawable.atlas_small_icon).setContentTitle("Atlas scheduled call").setContentText("Call "+task.optString("target","contact")).setContentIntent(pi).setAutoCancel(true).build();
+                  nm.notify(task.optString("id","").hashCode(),n);
+              }
+ 
+              private static long nextTime(long previous,String repeat){ long day=86400000L; if("daily".equals(repeat)) return previous+day; if("weekdays".equals(repeat)){ long n=previous+day; java.util.Calendar cal=java.util.Calendar.getInstance(); cal.setTimeInMillis(n); while(cal.get(java.util.Calendar.DAY_OF_WEEK)==java.util.Calendar.SATURDAY||cal.get(java.util.Calendar.DAY_OF_WEEK)==java.util.Calendar.SUNDAY){ n+=day; cal.setTimeInMillis(n);} return n;} if("weekly".equals(repeat)) return previous+7L*day; return 0L; }
+              private static String normalizeRepeat(String s){ s=s==null?"none":s.toLowerCase(Locale.US); return ("daily".equals(s)||"weekdays".equals(s)||"weekly".equals(s))?s:"none"; }
+              private static String normalizeIncoming(String s){ s=s==null?"ask":s.toLowerCase(Locale.US); return ("allow".equals(s)||"silence".equals(s)||"reject".equals(s))?s:"ask"; }
+              private static String digits(String s){ if(s==null)return""; String d=s.replaceAll("\\D",""); return d.length()>10?d.substring(d.length()-10):d; }
+              private static void trim(JSONArray a,int max){ while(a.length()>max)a.remove(0); }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasTaskReceiver.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+ 
+          public class AtlasTaskReceiver extends BroadcastReceiver {
+              @Override public void onReceive(Context c, Intent i) {
+                  String id=i==null?"":i.getStringExtra("task_id");
+                  if(id==null||id.isEmpty())return;
+                  BroadcastReceiver.PendingResult pr=goAsync();
+                  new Thread(() -> { try { AtlasAutomations.executeTask(c.getApplicationContext(),id); } finally { pr.finish(); } }).start();
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/VoiceAgentBridge.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.io.BufferedReader;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+ 
+          public final class VoiceAgentBridge {
+              private static final ExecutorService EXEC=Executors.newCachedThreadPool();
+              private static final String PREF="atlas_voice_bridge_v13";
+              private VoiceAgentBridge(){}
+ 
+              public static String delegate(Context c, JSONObject a){
+                  String target=a.optString("target","").trim(); String objective=a.optString("objective","").trim();
+                  if(target.isEmpty()||objective.isEmpty()) return "A delegated call needs a contact and an objective.";
+                  ContactTools.ContactHit hit=ContactTools.find(c,target); String number=hit==null?target:hit.number; String name=hit==null?target:hit.name;
+                  return delegateResolved(c,number,name,objective,a.optString("id","manual"));
+              }
+ 
+              public static String delegateResolved(Context c,String number,String name,String objective,String reference){
+                  if(!SecureStore.has(c,"relay_url")) return "Atlas Voice Relay is not configured yet.";
+                  if(number==null||number.trim().isEmpty()||objective==null||objective.trim().isEmpty()) return "The delegated call is missing a number or objective.";
+                  Context app=c.getApplicationContext(); EXEC.execute(() -> start(app,number,name,objective,reference));
+                  return "Starting an Atlas delegated AI call with "+(name==null?"that contact":name)+".";
+              }
+ 
+              private static void start(Context c,String number,String name,String objective,String reference){
+                  try{
+                      String base=SecureStore.get(c,"relay_url"); String endpoint=(base.endsWith("/")?base.substring(0,base.length()-1):base)+"/v1/calls";
+                      JSONObject body=new JSONObject().put("to",number).put("displayName",name==null?"":name).put("objective",objective).put("reference",reference)
+                              .put("memory",tail(AtlasStore.memories(c),12));
+                      JSONObject out=request("POST",endpoint,SecureStore.get(c,"relay_token"),body.toString());
+                      String id=out.optString("id",out.optString("callSid",""));
+                      c.getSharedPreferences(PREF,Context.MODE_PRIVATE).edit().putString("last_id",id).putString("last_status","Call started: "+name+" - "+objective).apply();
+                      if(!id.isEmpty()) EXEC.execute(() -> poll(c,base,id));
+                  }catch(Exception e){ c.getSharedPreferences(PREF,Context.MODE_PRIVATE).edit().putString("last_status","Delegated call failed: "+e.getMessage()).apply(); }
+              }
+ 
+              private static void poll(Context c,String base,String id){
+                  String root=base.endsWith("/")?base.substring(0,base.length()-1):base;
+                  for(int i=0;i<30;i++){
+                      try{ Thread.sleep(10000L); JSONObject o=request("GET",root+"/v1/calls/"+java.net.URLEncoder.encode(id,"UTF-8"),SecureStore.get(c,"relay_token"),null); String status=o.optString("status",""); String summary=o.optString("summary",""); c.getSharedPreferences(PREF,Context.MODE_PRIVATE).edit().putString("last_status",status+(summary.isEmpty()?"":" - "+summary)).apply(); if("completed".equalsIgnoreCase(status)||"failed".equalsIgnoreCase(status)) break; }catch(Exception ignored){}
+                  }
+              }
+ 
+              public static String lastStatus(Context c){ return c.getSharedPreferences(PREF,Context.MODE_PRIVATE).getString("last_status","No delegated AI call has been run yet."); }
+              private static JSONArray tail(JSONArray a,int max){ JSONArray out=new JSONArray(); if(a==null)return out; for(int i=Math.max(0,a.length()-max);i<a.length();i++)out.put(a.opt(i)); return out; }
+ 
+              private static JSONObject request(String method,String endpoint,String token,String body)throws Exception{
+                  HttpURLConnection h=(HttpURLConnection)new URL(endpoint).openConnection(); h.setConnectTimeout(15000); h.setReadTimeout(30000); h.setRequestMethod(method); h.setRequestProperty("Accept","application/json"); if(token!=null&&!token.isEmpty())h.setRequestProperty("Authorization","Bearer "+token);
+                  if(body!=null){ h.setDoOutput(true); h.setRequestProperty("Content-Type","application/json; charset=utf-8"); try(OutputStream os=h.getOutputStream()){os.write(body.getBytes(StandardCharsets.UTF_8));} }
+                  int code=h.getResponseCode(); InputStream in=code>=200&&code<300?h.getInputStream():h.getErrorStream(); String raw=read(in); h.disconnect(); if(code<200||code>=300)throw new Exception("HTTP "+code+" "+raw); return raw.trim().isEmpty()?new JSONObject():new JSONObject(raw);
+              }
+              private static String read(InputStream in)throws Exception{ if(in==null)return""; BufferedReader br=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8)); StringBuilder s=new StringBuilder(); String line; while((line=br.readLine())!=null)s.append(line); return s.toString(); }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasCallPrompt.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Build;
+ 
+          public final class AtlasCallPrompt {
+              private static final String CH="atlas_incoming_calls";
+              private AtlasCallPrompt(){}
+              public static void show(Context c,String name,String number){
+                  NotificationManager nm=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE);
+                  if(Build.VERSION.SDK_INT>=26)nm.createNotificationChannel(new NotificationChannel(CH,"Atlas Call Assistant",NotificationManager.IMPORTANCE_HIGH));
+                  Intent yes=new Intent(c,AtlasCallActionReceiver.class).setAction("atlas.answer");
+                  Intent no=new Intent(c,AtlasCallActionReceiver.class).setAction("atlas.reject");
+                  PendingIntent y=PendingIntent.getBroadcast(c,8101,yes,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+                  PendingIntent n=PendingIntent.getBroadcast(c,8102,no,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+                  android.app.Notification notification=new android.app.Notification.Builder(c,CH).setSmallIcon(R.drawable.atlas_small_icon)
+                          .setContentTitle((name==null||name.isEmpty()?number:name)+" is calling").setContentText("Atlas: answer this call?")
+                          .setPriority(android.app.Notification.PRIORITY_MAX).setCategory(android.app.Notification.CATEGORY_CALL)
+                          .addAction(new android.app.Notification.Action.Builder(R.drawable.atlas_small_icon,"ANSWER",y).build()).addAction(new android.app.Notification.Action.Builder(R.drawable.atlas_small_icon,"REJECT",n).build()).setAutoCancel(true).build();
+                  nm.notify(8100,notification);
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasCallActionReceiver.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.NotificationManager;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+ 
+          public class AtlasCallActionReceiver extends BroadcastReceiver {
+              @Override public void onReceive(Context c,Intent i){
+                  String a=i==null?"":i.getAction();
+                  if("atlas.answer".equals(a))PhoneTools.answer(c); else if("atlas.reject".equals(a))PhoneTools.end(c);
+                  NotificationManager nm=(NotificationManager)c.getSystemService(Context.NOTIFICATION_SERVICE); if(nm!=null)nm.cancel(8100);
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasCallScreeningService.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.telecom.Call;
+          import android.telecom.CallScreeningService;
+          import org.json.JSONObject;
+ 
+          public class AtlasCallScreeningService extends CallScreeningService {
+              @Override public void onScreenCall(Call.Details details){
+                  if(details.getCallDirection()!=Call.Details.DIRECTION_INCOMING) return;
+                  String number="unknown"; String name="";
+                  try{ if(details.getHandle()!=null)number=details.getHandle().getSchemeSpecificPart(); ContactTools.ContactHit hit=ContactTools.findByNumber(this,number); if(hit!=null)name=hit.name; }catch(Exception ignored){}
+                  JSONObject rule=AtlasAutomations.contactRule(this,number); String policy=rule==null?"ask":rule.optString("incomingPolicy","ask");
+                  boolean reject="reject".equals(policy); boolean silence="silence".equals(policy);
+                  try{ AtlasStore.addNotification(this,System.currentTimeMillis()+" | call | incoming | "+(name.isEmpty()?number:name)); }catch(Exception ignored){}
+                  respondToCall(details,new CallResponse.Builder().setDisallowCall(reject).setRejectCall(reject).setSilenceCall(silence).setSkipCallLog(false).setSkipNotification(false).build());
+                  if(!reject&&!silence&&"ask".equals(policy)) AtlasCallPrompt.show(this,name,number);
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasNotificationListener.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.app.Notification;
+          import android.service.notification.NotificationListenerService;
+          import android.service.notification.StatusBarNotification;
+ 
+          public class AtlasNotificationListener extends NotificationListenerService {
+              @Override public void onNotificationPosted(StatusBarNotification sbn){
+                  try{
+                      Notification n=sbn.getNotification(); CharSequence title=n.extras.getCharSequence(Notification.EXTRA_TITLE,""); CharSequence text=n.extras.getCharSequence(Notification.EXTRA_TEXT,"");
+                      String t=title==null?"":title.toString(), x=text==null?"":text.toString();
+                      AtlasStore.addNotification(this,System.currentTimeMillis()+" | "+sbn.getPackageName()+" | "+t+" | "+x);
+                      AtlasAutomations.onNotification(this,sbn.getPackageName(),t,x);
+                  }catch(Exception ignored){}
+              }
+          }
+          JAVA
+ 
+          cat > app/src/main/java/com/atlas/personalai/AtlasBootReceiver.java <<'JAVA'
+          package com.atlas.personalai;
+ 
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+ 
+          public class AtlasBootReceiver extends BroadcastReceiver {
+              @Override public void onReceive(Context c,Intent i){
+                  try{ c.startForegroundService(new Intent(c,AtlasForegroundService.class)); }catch(Exception ignored){}
+                  try{ AtlasAutomations.rescheduleAll(c); }catch(Exception ignored){}
+              }
+          }
+          JAVA
+ 
+          mkdir -p atlas-relay
+          cat > atlas-relay/package.json <<'JSON'
+          {
+            "name": "atlas-voice-relay",
+            "version": "1.3.0",
+            "private": true,
+            "type": "module",
+            "scripts": {"start": "node server.js"},
+            "dependencies": {"express": "^5.1.0", "ws": "^8.18.0"}
+          }
+          JSON
+ 
+          cat > atlas-relay/server.js <<'NODE'
+          import express from 'express';
+          import http from 'http';
+          import {WebSocketServer} from 'ws';
+          import crypto from 'crypto';
+ 
+          const app=express(); app.use(express.json({limit:'1mb'}));
+          const server=http.createServer(app); const wss=new WebSocketServer({server,path:'/ws'});
+          const calls=new Map();
+          const PORT=Number(process.env.PORT||8080);
+          const BASE=(process.env.PUBLIC_BASE_URL||'').replace(/\/$/,'');
+ 
+          function auth(req,res,next){ const wanted=process.env.RELAY_TOKEN||''; if(!wanted)return next(); const got=(req.headers.authorization||'').replace(/^Bearer\s+/i,''); if(got!==wanted)return res.status(401).json({error:'unauthorized'}); next(); }
+          function xml(s=''){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');}
+          function basic(sid,token){return 'Basic '+Buffer.from(`${sid}:${token}`).toString('base64');}
+ 
+          app.post('/v1/calls',auth,async(req,res)=>{
+            try{
+              const {to,displayName='',objective='',reference='',memory=[]}=req.body||{};
+              if(!to||!objective)return res.status(400).json({error:'to and objective required'});
+              const sid=process.env.TWILIO_ACCOUNT_SID, token=process.env.TWILIO_AUTH_TOKEN, from=process.env.TWILIO_FROM_NUMBER;
+              if(!sid||!token||!from||!BASE||!process.env.GEMINI_API_KEY)return res.status(503).json({error:'relay server is not fully configured'});
+              const id=crypto.randomUUID(); calls.set(id,{id,status:'starting',to,displayName,objective,reference,memory,summary:'',history:[]});
+              const twiml=`<Response><Connect action="${xml(BASE+'/connect-action?id='+encodeURIComponent(id))}"><ConversationRelay url="${xml(BASE.replace(/^http/,'ws')+'/ws?id='+encodeURIComponent(id))}" welcomeGreeting="${xml(`Hi, this is Atlas, an AI assistant calling on behalf of someone. I'm calling about ${objective}.`)}" welcomeGreetingInterruptible="speech" /></Connect></Response>`;
+              const form=new URLSearchParams({To:to,From:from,Twiml:twiml,StatusCallback:`${BASE}/twilio-status?id=${encodeURIComponent(id)}`,StatusCallbackMethod:'POST'});
+              const r=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Calls.json`,{method:'POST',headers:{Authorization:basic(sid,token),'Content-Type':'application/x-www-form-urlencoded'},body:form});
+              const data=await r.json(); if(!r.ok){calls.get(id).status='failed';calls.get(id).summary=JSON.stringify(data);return res.status(502).json({error:data});}
+              calls.get(id).callSid=data.sid; calls.get(id).status='queued'; res.json({id,callSid:data.sid,status:'queued'});
+            }catch(e){res.status(500).json({error:String(e.message||e)});}
+          });
+ 
+          app.get('/v1/calls/:id',auth,(req,res)=>{const c=calls.get(req.params.id); if(!c)return res.status(404).json({error:'not found'}); res.json({id:c.id,callSid:c.callSid||'',status:c.status,summary:c.summary||''});});
+          app.post('/twilio-status',express.urlencoded({extended:false}),(req,res)=>{const c=calls.get(String(req.query.id||'')); if(c)c.status=String(req.body.CallStatus||c.status); res.sendStatus(204);});
+          app.post('/connect-action',express.urlencoded({extended:false}),(req,res)=>{const c=calls.get(String(req.query.id||'')); if(c&&c.status!=='failed')c.status='completed'; res.type('text/xml').send('<Response></Response>');});
+ 
+          async function brain(call,userText){
+            const prompt=`You are Atlas, an AI assistant transparently calling on behalf of another person. Never pretend to be the human user. Objective: ${call.objective}. Contact: ${call.displayName||call.to}. Ask only what is needed, hold a natural concise conversation, and when the objective is satisfied provide a courteous closing. Return strict JSON {"say":"what to say next","done":true|false,"summary":"short result collected so far"}.\nConversation so far: ${JSON.stringify(call.history.slice(-12))}\nOther person just said: ${userText}`;
+            const body={contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.25,maxOutputTokens:700,responseMimeType:'application/json',thinkingConfig:{thinkingLevel:'low'}}};
+            const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',{method:'POST',headers:{'x-goog-api-key':process.env.GEMINI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(body)});
+            const data=await r.json(); if(!r.ok)throw new Error(JSON.stringify(data));
+            const raw=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join(''); return JSON.parse(raw);
+          }
+ 
+          wss.on('connection',(ws,req)=>{
+            const u=new URL(req.url,'http://localhost'); const id=u.searchParams.get('id'); const call=calls.get(id); if(!call){ws.close();return;} call.status='connected';
+            ws.on('message',async buf=>{
+              try{const msg=JSON.parse(buf.toString()); if(msg.type==='prompt'&&msg.last){call.history.push({role:'contact',text:msg.voicePrompt}); const out=await brain(call,msg.voicePrompt||''); call.history.push({role:'atlas',text:out.say}); call.summary=out.summary||call.summary; ws.send(JSON.stringify({type:'text',token:out.say||'Thanks.',last:true,interruptible:true,preemptible:true})); if(out.done){setTimeout(()=>{try{ws.send(JSON.stringify({type:'end',handoffData:JSON.stringify({summary:call.summary})}));}catch{}},Math.min(8000,Math.max(1800,(out.say||'').length*45)));}} else if(msg.type==='error'){call.status='failed';call.summary=msg.description||'Conversation Relay error';}}
+              catch(e){call.summary='Voice agent error: '+String(e.message||e); try{ws.send(JSON.stringify({type:'text',token:'I am sorry, I hit a technical problem. I will let them know.',last:true}));}catch{}}
+            });
+            ws.on('close',()=>{if(call.status!=='failed'&&call.status!=='completed')call.status='completed';});
+          });
+ 
+          server.listen(PORT,()=>console.log(`Atlas Voice Relay listening on ${PORT}`));
+          NODE
+ 
+          cat > atlas-relay/.env.example <<'ENV'
+          PORT=8080
+          PUBLIC_BASE_URL=https://your-public-relay.example.com
+          RELAY_TOKEN=change-me
+          TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          TWILIO_FROM_NUMBER=+15555550123
+          GEMINI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          ENV
+ 
+          echo "Atlas 1.3 life-agent, automation engine, call assistant, and voice relay source installed."
+ 
+      - name: Build Atlas 1.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleDebug
+ 
+      - name: Prepare and verify Atlas 1.3 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          mkdir -p dist
+          cp "$APK" "dist/Atlas-1.3-LIFE-AGENT.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "dist/Atlas-1.3-LIFE-AGENT.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "dist/Atlas-1.3-LIFE-AGENT.apk" | head -n 5
+          sha256sum "dist/Atlas-1.3-LIFE-AGENT.apk" > "dist/Atlas-1.3-LIFE-AGENT.sha256"
+ 
+      - name: Upload Atlas 1.3 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-1.3-LIFE-AGENT
+          path: |
+            dist/Atlas-1.3-LIFE-AGENT.apk
+            dist/Atlas-1.3-LIFE-AGENT.sha256
+            atlas-relay/
+          if-no-files-found: error
+          retention-days: 30
